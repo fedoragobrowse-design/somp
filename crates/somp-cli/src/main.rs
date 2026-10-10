@@ -206,6 +206,9 @@ async fn policy(cfg: config::Config, op: PolicyOp) -> Result<()> {
                         let host = host.strip_prefix('[').unwrap_or(host);
                         let (host, _) = host.split_once(']').unwrap_or((host, ""));
                         let port: u16 = p.parse().with_context(|| format!("--add-host port must be 1-65535, got {p:?}"))?;
+                        if port == 0 {
+                            bail!("--add-host port must be 1-65535, got {p:?}");
+                        }
                         (host.to_string(), port)
                     }
                     _ => (h.clone(), 443),

@@ -15,6 +15,7 @@ pub struct TierCheck {
     pub tier: Tier,
     pub kvm_present: bool,
     pub kvm_module: bool,
+    pub kvm_openable: bool,
     pub nft_usable: bool,
     pub bwrap_ok: bool,
 }
@@ -47,6 +48,7 @@ pub fn check() -> Result<TierCheck> {
         tier,
         kvm_present,
         kvm_module,
+        kvm_openable,
         nft_usable,
         bwrap_ok,
     })
@@ -59,9 +61,9 @@ impl TierCheck {
         match self.tier {
             Tier::Firecracker => Ok(()),
             Tier::FallbackNoKvm => bail!(
-                "fail-closed: no KVM (present={} module={}); governed work refused. \
+                "fail-closed: no KVM (present={} module={} openable={}); governed work refused. \
                  Run `somp doctor` for the tier table; use Tier 1/2 only for explicitly ungoverned tasks",
-                self.kvm_present, self.kvm_module
+                self.kvm_present, self.kvm_module, self.kvm_openable
             ),
         }
     }
@@ -69,7 +71,7 @@ impl TierCheck {
 
 pub fn doctor() -> Result<()> {
     let c = check()?;
-    println!("/dev/kvm:      {} (openable: {})", c.kvm_present, std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok());
+    println!("/dev/kvm:      {} (openable: {})", c.kvm_present, c.kvm_openable);
     println!("kvm module:    {}", c.kvm_module);
     println!("nft usable:    {}", c.nft_usable);
     println!("bwrap userns:  {}", c.bwrap_ok);
@@ -93,6 +95,7 @@ mod tests {
             tier: Tier::FallbackNoKvm,
             kvm_present: false,
             kvm_module: false,
+            kvm_openable: false,
             nft_usable: false,
             bwrap_ok: true,
         };
@@ -105,6 +108,7 @@ mod tests {
             tier: Tier::Firecracker,
             kvm_present: true,
             kvm_module: true,
+            kvm_openable: true,
             nft_usable: true,
             bwrap_ok: true,
         };

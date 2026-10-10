@@ -147,11 +147,11 @@ async fn dispatch_inner(
         .await
         .context("stage TASK.md")?;
     for spec in &args.file {
-        // Split at the LAST '=': host temp paths may contain '=' (guest
-        // staging paths never legitimately do). Reject '..': guest escapes
-        // REPO and the server diff (hardcoded to /workspace/repository)
-        // would silently miss the file.
-        let (guest, host) = spec.rsplit_once('=').with_context(|| format!("--file must be <guest>=<host>, got {spec:?}"))?;
+        // Split at the FIRST '=': spec is <guest>=<host>, guest staging
+        // names never contain '=' but host paths may (temp dirs, query
+        // strings). Reject '..': guest escapes REPO and the server diff
+        // (hardcoded to /workspace/repository) would silently miss the file.
+        let (guest, host) = spec.split_once('=').with_context(|| format!("--file must be <guest>=<host>, got {spec:?}"))?;
         if guest.split('/').any(|c| c == "..") {
             anyhow::bail!("--file guest path must stay under /workspace/repository, got {guest:?}");
         }
@@ -236,18 +236,18 @@ mod tests {
 
     #[test]
     fn file_spec_split() {
-        let (g, h) = "/workspace/a.txt=/tmp/a.txt".rsplit_once('=').unwrap();
+        let (g, h) = "/workspace/a.txt=/tmp/a.txt".split_once('=').unwrap();
         assert_eq!(g, "/workspace/a.txt");
         assert_eq!(h, "/tmp/a.txt");
     }
 
     #[test]
-    fn file_spec_splits_at_last_equals() {
-        // Host temp paths may contain '=': rsplit at the LAST '=' keeps the
-        // guest staging path whole (guest names never contain '=').
-        let (g, h) = "ctx.md=/tmp/with=equals/x.md".rsplit_once('=').unwrap();
-        assert_eq!(g, "ctx.md=/tmp/with");
-        assert_eq!(h, "equals/x.md");
+    fn file_spec_splits_at_first_equals() {
+        // Host paths may contain '=' (temp dirs, query strings); guest
+        // staging names never do. split_once keeps the host side whole.
+        let (g, h) = "ctx.md=/tmp/with=equals/x.md".split_once('=').unwrap();
+        assert_eq!(g, "ctx.md");
+        assert_eq!(h, "/tmp/with=equals/x.md");
     }
 
     #[test]
