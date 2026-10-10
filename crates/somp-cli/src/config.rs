@@ -108,12 +108,34 @@ impl SecurityLevel {
             SecurityLevel::Off => "OFF",
         }
     }
-
     pub fn describe(self) -> &'static str {
         match self {
             SecurityLevel::Strict => "Firecracker microVM + Guard model-only + srt",
             SecurityLevel::Standard => "Docker worker + Guard + srt (dev only, no microVM)",
             SecurityLevel::Off => "no sandboxing — governed work refused",
+        }
+    }
+
+
+    /// Worker runtime this level dispatches to. Standard is honestly docker:
+    /// previously both levels hardcoded firecracker, so `standard` lied about
+    /// relaxing the microVM boundary.
+    pub fn runtime(self) -> &'static str {
+        match self {
+            SecurityLevel::Strict => "firecracker",
+            SecurityLevel::Standard => "docker",
+            SecurityLevel::Off => "none",
+        }
+    }
+
+    /// Tier enforcement per level: strict needs KVM-backed Firecracker;
+    /// standard accepts any host (the Docker boundary lives on the worker).
+    /// Off never reaches here (require_level bails first).
+    pub fn require_tier(self, t: &crate::tier::TierCheck) -> Result<()> {
+        match self {
+            SecurityLevel::Strict => t.require_governed(),
+            SecurityLevel::Standard => Ok(()),
+            SecurityLevel::Off => anyhow::bail!("fail-closed: level is OFF"),
         }
     }
 }
@@ -391,5 +413,24 @@ mod tests {
             None => std::env::remove_var("SOMP_LEVEL"),
         }
         assert!(r.is_err(), "unknown SOMP_LEVEL must fail closed, not guess");
+    }
+
+    #[test]
+    fn level_runtime_mapping() {
+        assert_eq!(SecurityLevel::Strict.runtime(), "firecracker");
+        assert_eq!(SecurityLevel::Standard.runtime(), "docker");
+    }
+
+    #[test]
+    fn off_never_reaches_tier() {
+        use crate::tier::{Tier, TierCheck};
+        let permissive = TierCheck { tier: Tier::Firecracker, kvm_present: true, kvm_module: true, kvm_openable: true, nft_usable: true, bwrap_ok: true };
+        assert!(SecurityLevel::Off.require_tier(&permissive).is_err());
+        let bare = TierCheck { tier: Tier::FallbackNoKvm, kvm_present: false, kvm_module: false, kvm_openable: false, nft_usable: false, bwrap_ok: true };
+        // standard skips the host KVM gate (Docker boundary is worker-side)
+        assert!(SecurityLevel::Standard.require_tier(&bare).is_ok());
+        // strict keeps the KVM gate
+        assert!(SecurityLevel::Strict.require_tier(&bare).is_err());
+        assert!(SecurityLevel::Strict.require_tier(&permissive).is_ok());
     }
 }

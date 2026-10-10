@@ -70,17 +70,22 @@ pub async fn run(cfg: &Config, args: DispatchArgs) -> Result<()> {
 /// standard both dispatch (worker capability decides the real boundary —
 /// see UNPROVEN.md for Firecracker/Docker status on this host).
 pub fn require_level(cfg: &Config) -> Result<crate::config::SecurityLevel> {
+    require_level_for(cfg, "dispatch")
+}
+
+/// Same gate with the entry-point name in the refusal (session up vs dispatch).
+pub fn require_level_for(cfg: &Config, entry: &str) -> Result<crate::config::SecurityLevel> {
     let level = crate::config::SecurityLevel::effective(cfg.security.level)?;
     if level == crate::config::SecurityLevel::Off {
-        anyhow::bail!("fail-closed: sandbox protection level is OFF — governed dispatch refused (somp level strict|standard)");
+        anyhow::bail!("fail-closed: sandbox protection level is OFF — governed {entry} refused (somp level strict|standard)");
     }
     Ok(level)
 }
 
 pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput> {
-    require_level(cfg)?;
-    tier::check()?.require_governed()?;
-
+    let level = require_level(cfg)?;
+    level.require_tier(&tier::check()?)?;
+    let runtime = level.runtime();
     let task_text = if args.task_file == "-" {
         use std::io::Read as _;
         let mut s = String::new();
@@ -97,7 +102,7 @@ pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput
     let client = cfg.aiec_client()?;
     let req = cfg.subagent_create_request(args.cpus, args.mem, args.timeout_s)?;
     let sb = client
-        .create_sandbox_with_runtime(&req, "firecracker")
+        .create_sandbox_with_runtime(&req, runtime)
         .await
         .context("create subagent VM")?;
     let start_ms = t0.elapsed().as_millis() as u64;

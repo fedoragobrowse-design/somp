@@ -17,12 +17,23 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "somp", version, about = "Secure OMP: hardened omp runtime")]
 struct Cli {
+    /// No subcommand opens the governed omp TUI (same as `somp tui`).
+    /// NOTE: no top-level passthrough positional — a greedy trailing arg
+    /// steals subcommand positionals (`somp level standard` silently routed
+    /// to TUI extras). Passthrough lives on `somp tui -- <args>`.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Open the governed omp TUI (loads somp-ext with SOMP_GOVERNED=1).
+    /// This is also what bare `somp` (no subcommand) does.
+    Tui {
+        /// Extra args passed through to omp.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        extra: Vec<String>,
+    },
     /// Manage the long-lived session VM.
     Session {
         #[command(subcommand)]
@@ -46,6 +57,10 @@ enum Cmd {
         /// Only check: fetch + report behind/ahead, change nothing.
         #[arg(long)]
         check: bool,
+        /// Allow an origin that is not fedoragobrowse-design/somp (explicit
+        /// opt-in for forks; without it foreign origins are refused).
+        #[arg(long)]
+        allow_foreign_origin: bool,
     },
     /// Check host tier (KVM/Firecracker candidacy, srt prerequisites).
     Doctor,
@@ -98,16 +113,64 @@ enum PolicyOp {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Bare `somp` (no subcommand) opens the governed TUI — this is the
+    // primary operator entry point. `somp <extra...>` passes through.
+    let cmd = cli.cmd.unwrap_or(Cmd::Tui { extra: Vec::new() });
+    // TUI launch must not require a config file: launch first, load config
+    // only for non-TUI subcommands.
+    if let Cmd::Tui { extra } = cmd {
+        return launch_governed_tui(extra);
+    }
     let cfg = config::load()?;
-    match cli.cmd {
+    match cmd {
+        Cmd::Tui { .. } => unreachable!("handled above"),
         Cmd::Doctor => tier::doctor(),
         Cmd::Level { level } => level_cmd(cfg, level),
-        Cmd::Update { check } => update_cmd(check),
+        Cmd::Update { check, allow_foreign_origin } => update_cmd(check, allow_foreign_origin),
         Cmd::Session { op } => session(cfg, op).await,
         Cmd::Dispatch(args) => dispatch::run(&cfg, args).await,
         Cmd::Policy { op } => policy(cfg, op).await,
         Cmd::Bench(args) => bench::run(&cfg, args).await,
     }
+}
+
+/// Exec the governed omp TUI: same environment the somp-omp wrapper sets
+/// (SOMP_GOVERNED=1 + explicit -e ext load), resolved from this binary's
+/// checkout (ext/somp-ext.ts next to the repo root). Replaces this process
+/// so signals/TTY behave exactly like `omp`.
+fn launch_governed_tui(extra: Vec<String>) -> Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let repo = somp_repo_dir()?;
+    let ext = repo.join("ext/somp-ext.ts");
+    if !ext.exists() {
+        bail!("cannot launch governed TUI: {} missing", ext.display());
+    }
+    let somp_bin = std::env::current_exe().context("current exe")?;
+    // Local plane CA: same fallback the wrapper uses (self-signed 18443).
+    if std::env::var("AIEC_TLS_CA_CERT").is_err() {
+        let ca = dirs_home_ca();
+        if ca.exists() {
+            // SAFETY: single-threaded pre-exec setup; no other thread exists yet.
+            unsafe { std::env::set_var("AIEC_TLS_CA_CERT", &ca) };
+        }
+    }
+    // SAFETY: single-threaded pre-exec setup.
+    unsafe {
+        std::env::set_var("SOMP_GOVERNED", "1");
+        std::env::set_var("SOMP_BIN", &somp_bin);
+    }
+    let err = std::process::Command::new("omp")
+        .arg("-e")
+        .arg(&ext)
+        .args(&extra)
+        .exec();
+    // exec only returns on failure.
+    Err(anyhow::anyhow!("exec omp failed: {err} (is omp on PATH?)"))
+}
+
+fn dirs_home_ca() -> std::path::PathBuf {
+    let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/root"));
+    home.join(".config/aiec/ca.pem")
 }
 
 /// Update sOMP from the operator's own repo. Source of truth is the `origin`
@@ -131,7 +194,7 @@ fn somp_repo_dir() -> Result<std::path::PathBuf> {
     anyhow::bail!("cannot locate sOMP checkout from exe (expected install.sh + ext/somp-ext.ts within 4 levels)");
 }
 
-fn update_cmd(check: bool) -> Result<()> {
+fn update_cmd(check: bool, allow_foreign_origin: bool) -> Result<()> {
     let repo = somp_repo_dir()?;
     let remote = String::from_utf8(
         std::process::Command::new("git").args(["-C"]).arg(&repo).args(["remote", "get-url", "origin"])
@@ -139,14 +202,15 @@ fn update_cmd(check: bool) -> Result<()> {
     ).unwrap_or_default().trim().to_string();
     println!("somp repo: {}", repo.display());
     println!("origin:    {}", if remote.is_empty() { "(unset)" } else { &remote });
-    // Fail-closed origin check: an origin pointing at upstream omp
-    // (can1357/oh-my-pi) or any non-somp repo would pull FOREIGN code and
-    // rebuild the governed binary from it. Refuse outright.
-    if remote_contains_upstream(&remote) {
-        bail!("refusing update: origin {remote:?} looks like upstream omp or a non-somp repo — `somp update` only pulls from YOUR somp repo ({FALLBACK_REPO})");
+    // Exact-match origin gate: only fedoragobrowse-design/somp (https + ssh
+    // forms) is trusted to rebuild the governed binary. A substring check
+    // would let github.com/evil/somp.git pass — fail-closed on everything
+    // else unless the operator passes --allow-foreign-origin explicitly.
+    if !is_trusted_origin(&remote) && !allow_foreign_origin {
+        bail!("refusing update: origin {remote:?} is not YOUR somp repo ({FALLBACK_REPO}) — pulling foreign code would rebuild the governed binary from it. Pass --allow-foreign-origin to override explicitly");
     }
-    if !remote.is_empty() && remote != FALLBACK_REPO {
-        println!("note: origin is not {FALLBACK_REPO} — pulling from YOUR configured origin, not upstream omp.");
+    if allow_foreign_origin {
+        println!("note: --allow-foreign-origin given; trusting configured origin (operator override)");
     }
     // Fetch first: --check reports without mutating the working tree.
     let st = std::process::Command::new("git").args(["-C"]).arg(&repo)
@@ -154,21 +218,28 @@ fn update_cmd(check: bool) -> Result<()> {
     if !st.success() {
         bail!("git fetch origin failed in {}", repo.display());
     }
+    // Branch-aware: resolve the upstream tracking branch (@{u}) instead of
+    // hardcoding origin/main, so checkouts tracking another branch work.
+    // Falls back to origin/HEAD when no tracking branch is configured.
+    let upstream_ref = tracking_branch(&repo).unwrap_or_else(|| "origin/HEAD".to_string());
     let local = git_rev(&repo, "HEAD")?;
-    let upstream = git_rev(&repo, "@{u}")?;
+    let upstream = git_rev(&repo, &upstream_ref)?;
     if local == upstream {
         println!("already up to date ({})", &local[..12.min(local.len())]);
         return Ok(());
     }
-    println!("behind: local {} -> origin {}", &local[..12.min(local.len())], &upstream[..12.min(upstream.len())]);
+    println!("behind: local {} -> {} {}", &local[..12.min(local.len())], upstream_ref, &upstream[..12.min(upstream.len())]);
     if check {
         println!("--check: not pulling. Run `somp update` to pull + rebuild + reinstall.");
         return Ok(());
     }
+    // Pull the CURRENT branch from its tracking upstream — never a hardcoded
+    // `origin main` (breaks checkouts on other branches).
+    let branch = current_branch(&repo)?;
     let st = std::process::Command::new("git").args(["-C"]).arg(&repo)
-        .args(["pull", "--ff-only", "origin", "main"]).status().context("git pull")?;
+        .args(["pull", "--ff-only"]).status().context("git pull")?;
     if !st.success() {
-        bail!("git pull --ff-only failed (local changes? stash first, then `somp update`)");
+        bail!("git pull --ff-only failed on branch {branch:?} (local changes? stash first, then `somp update`)");
     }
     println!("== rebuild + reinstall ==");
     let installer = repo.join("install.sh");
@@ -189,16 +260,35 @@ fn git_rev(repo: &std::path::Path, rev: &str) -> Result<String> {
     Ok(String::from_utf8(out.stdout).unwrap_or_default().trim().to_string())
 }
 
-/// True when the origin URL must NOT be trusted for `somp update`.
-/// Matches upstream omp (oh-my-pi / oh_my_pi, any owner) and anything that
-/// does not look like a somp repo URL. Case-insensitive; matches both
-/// https and ssh remote forms.
-fn remote_contains_upstream(remote: &str) -> bool {
-    let r = remote.to_lowercase();
-    if r.is_empty() {
-        return false; // unset origin fails later at fetch, with git's own error
+/// Only fedoragobrowse-design/somp, https and ssh forms. Exact match on the
+/// path — substring checks let evil/somp.git pass.
+fn is_trusted_origin(remote: &str) -> bool {
+    let r = remote.trim().to_lowercase();
+    r == "https://github.com/fedoragobrowse-design/somp.git"
+        || r == "https://github.com/fedoragobrowse-design/somp"
+        || r == "git@github.com:fedoragobrowse-design/somp.git"
+        || r == "git@github.com:fedoragobrowse-design/somp"
+        || r == "ssh://git@github.com/fedoragobrowse-design/somp.git"
+        || r == "ssh://git@github.com/fedoragobrowse-design/somp"
+}
+
+/// Symbolic name of the current branch's tracking upstream (e.g.
+/// `origin/main`), or None when unconfigured.
+fn tracking_branch(repo: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git").args(["-C"]).arg(repo)
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).output().ok()?;
+    if !out.status.success() {
+        return None;
     }
-    !r.contains("somp") || r.contains("oh-my-pi") || r.contains("oh_my_pi")
+    let s = String::from_utf8(out.stdout).unwrap_or_default().trim().to_string();
+    if s.is_empty() || s == "@{u}" { None } else { Some(s) }
+}
+
+/// Short name of the checked-out branch (for error messages only).
+fn current_branch(repo: &std::path::Path) -> Result<String> {
+    let out = std::process::Command::new("git").args(["-C"]).arg(repo)
+        .args(["branch", "--show-current"]).output().context("git branch --show-current")?;
+    Ok(String::from_utf8(out.stdout).unwrap_or_default().trim().to_string())
 }
 fn level_cmd(cfg: config::Config, level: Option<String>) -> Result<()> {
     match level {
@@ -215,15 +305,23 @@ fn level_cmd(cfg: config::Config, level: Option<String>) -> Result<()> {
                 bail!("level must be strict|standard|off, got {want:?}");
             }
             // Persist to config file; read-modify-write preserves other keys.
+            // Ensure the `security` table exists first: indexing Null panics
+            // in serde_yaml on configs written before the level feature.
             let path = config::config_path();
             let mut raw: serde_yaml::Value = if path.exists() {
                 serde_yaml::from_str(&std::fs::read_to_string(&path)?)?
             } else {
                 serde_yaml::Value::Mapping(Default::default())
             };
+            if !raw.get("security").is_some_and(|v| v.is_mapping()) {
+                raw["security"] = serde_yaml::Value::Mapping(Default::default());
+            }
             raw["security"]["level"] = serde_yaml::Value::String(want.clone());
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             std::fs::write(&path, serde_yaml::to_string(&raw)?)?;
-            println!("sandbox protection level set to {want} ({})", path.display());
+            println!("security level set to {want} ({})", path.display());
             Ok(())
         }
     }
@@ -233,8 +331,10 @@ async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
     let client = cfg.aiec_client()?;
     match op {
         SessionOp::Up(args) => {
+            // Off refuses EVERY governed entry point, not just dispatch.
+            let level = dispatch::require_level_for(&cfg, "session up")?;
             let dotier = tier::check()?;
-            dotier.require_governed()?;
+            level.require_tier(&dotier)?;
             if let Some(existing) = config::session_state_load()? {
                 let sb = client.get_sandbox(existing.id).await;
                 if let Ok(sb) = sb {
@@ -245,7 +345,7 @@ async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
             }
             let req = cfg.session_create_request(&args)?;
             let sb = client
-                .create_sandbox_with_runtime(&req, "firecracker")
+                .create_sandbox_with_runtime(&req, level.runtime())
                 .await
                 .context("create session VM")?;
             config::session_state_store(sb.id)?;
@@ -373,20 +473,31 @@ mod update_tests {
 
     #[test]
     fn upstream_origin_refused() {
-        assert!(remote_contains_upstream("https://github.com/can1357/oh-my-pi.git"));
-        assert!(remote_contains_upstream("git@github.com:someone/oh-my-pi.git"));
-        assert!(remote_contains_upstream("https://github.com/other/oh_my_pi.git"));
+        assert!(!is_trusted_origin("https://github.com/can1357/oh-my-pi.git"));
+        assert!(!is_trusted_origin("git@github.com:someone/oh-my-pi.git"));
+        assert!(!is_trusted_origin("https://github.com/other/oh_my_pi.git"));
     }
 
     #[test]
-    fn non_somp_origin_refused() {
-        assert!(remote_contains_upstream("https://github.com/someone/random-tool.git"));
+    fn evil_somp_lookalike_refused() {
+        // The old substring gate (!contains("somp")) let these pass — the
+        // exact-match gate must refuse them.
+        assert!(!is_trusted_origin("https://github.com/evil/somp.git"));
+        assert!(!is_trusted_origin("https://github.com/evil/somp-fork.git"));
+        assert!(!is_trusted_origin("https://github.com/someone/random-tool.git"));
+        assert!(!is_trusted_origin("https://github.com/fedoragobrowse-design/somp-evil.git"));
+        assert!(!is_trusted_origin("https://github.com/fedoragobrowse-design/evil-somp.git"));
+        assert!(!is_trusted_origin(""));
     }
 
     #[test]
-    fn own_repo_allowed() {
-        assert!(!remote_contains_upstream("https://github.com/fedoragobrowse-design/somp.git"));
-        assert!(!remote_contains_upstream("git@github.com:fedoragobrowse-design/somp.git"));
-        assert!(!remote_contains_upstream(""));
+    fn own_repo_allowed_all_forms() {
+        assert!(is_trusted_origin("https://github.com/fedoragobrowse-design/somp.git"));
+        assert!(is_trusted_origin("https://github.com/fedoragobrowse-design/somp"));
+        assert!(is_trusted_origin("git@github.com:fedoragobrowse-design/somp.git"));
+        assert!(is_trusted_origin("git@github.com:fedoragobrowse-design/somp"));
+        assert!(is_trusted_origin("ssh://git@github.com/fedoragobrowse-design/somp.git"));
+        // Case-insensitive: git remotes vary in case.
+        assert!(is_trusted_origin("HTTPS://GITHUB.COM/FEDORAGOBROWSE-DESIGN/SOMP.GIT"));
     }
 }
