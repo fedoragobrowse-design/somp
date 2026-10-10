@@ -297,3 +297,15 @@
 - Guest build prerequisites present (builder script, srt dist, mke2fs,
   node/bun/bwrap/socat/rg) except `AIEC_KERNEL` + out-dir; build runs when
   the NUC (KVM host) is back — loop-mount needs root there.
+
+## somp-guest image built locally via debugfs overlay (2026-10-10)
+- Base: cached NUC rootfs (`~/guard-fc-images/rootfs-nuc.ext4`, Debian
+  bookworm coding profile, clean fsck) + `vmlinux-nuc` (43M ELF).
+- Overlay (no mount needed): `/etc/somp/srt-settings.json`,
+  `/usr/local/bin/somp-bootstrap`, `/opt/somp/bin/{node,bun,srt-shim}`,
+  full `/opt/somp/srt/dist` (168 files) + `package.json`. Verified by
+  `ls -l` long-listing (earlier short-`ls` truncated names, false "missing") +
+  sha256 round-trip on 3 files (MATCH) + `e2fsck -f` clean.
+- Staged at `~/guard-fc-images/somp/{somp-guest.ext4,somp-guest.sha256,vmlinux}`.
+  Registration on the NUC worker (`~/aiec/images/`) waits for the link.
+- Honest gap: guest never booted — first boot is the NUC prove-out.
