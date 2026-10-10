@@ -40,6 +40,13 @@ enum Cmd {
     /// Show or set the governed security level (strict|standard|off).
     /// No arg prints the effective level (SOMP_LEVEL env wins over config).
     Level { level: Option<String> },
+    /// Update sOMP from YOUR repo (fedoragobrowse-design/somp): git pull +
+    /// rebuild + reinstall links. Never touches upstream omp or npm.
+    Update {
+        /// Only check: fetch + report behind/ahead, change nothing.
+        #[arg(long)]
+        check: bool,
+    },
     /// Check host tier (KVM/Firecracker candidacy, srt prerequisites).
     Doctor,
 }
@@ -95,11 +102,85 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Doctor => tier::doctor(),
         Cmd::Level { level } => level_cmd(cfg, level),
+        Cmd::Update { check } => update_cmd(check),
         Cmd::Session { op } => session(cfg, op).await,
         Cmd::Dispatch(args) => dispatch::run(&cfg, args).await,
         Cmd::Policy { op } => policy(cfg, op).await,
         Cmd::Bench(args) => bench::run(&cfg, args).await,
     }
+}
+
+/// Update sOMP from the operator's own repo. Source of truth is the `origin`
+/// remote of the checkout this binary was installed from — resolved at
+/// runtime via the `somp` symlink target (install.sh links
+/// ~/.local/bin/somp -> <repo>/crates/somp-cli/target/release/somp).
+/// Never consults npm, api.github.com, or any upstream omp channel.
+const FALLBACK_REPO: &str = "https://github.com/fedoragobrowse-design/somp.git";
+
+fn somp_repo_dir() -> Result<std::path::PathBuf> {
+    let exe = std::env::current_exe().context("current exe")?;
+    let real = std::fs::read_link(&exe).unwrap_or(exe);
+    // <repo>/crates/somp-cli/target/release/somp -> <repo>
+    let mut dir = real.parent().context("exe has no parent")?.to_path_buf();
+    for _ in 0..4 {
+        dir = dir.parent().context("exe path too shallow")?.to_path_buf();
+        if dir.join("install.sh").exists() && dir.join("ext/somp-ext.ts").exists() {
+            return Ok(dir);
+        }
+    }
+    anyhow::bail!("cannot locate sOMP checkout from exe (expected install.sh + ext/somp-ext.ts within 4 levels)");
+}
+
+fn update_cmd(check: bool) -> Result<()> {
+    let repo = somp_repo_dir()?;
+    let remote = String::from_utf8(
+        std::process::Command::new("git").args(["-C"]).arg(&repo).args(["remote", "get-url", "origin"])
+            .output().context("git remote get-url")?.stdout,
+    ).unwrap_or_default().trim().to_string();
+    println!("somp repo: {}", repo.display());
+    println!("origin:    {}", if remote.is_empty() { "(unset)" } else { &remote });
+    if !remote.is_empty() && remote != FALLBACK_REPO {
+        println!("note: origin is not {FALLBACK_REPO} — pulling from YOUR configured origin, not upstream omp.");
+    }
+    // Fetch first: --check reports without mutating the working tree.
+    let st = std::process::Command::new("git").args(["-C"]).arg(&repo)
+        .args(["fetch", "origin"]).status().context("git fetch")?;
+    if !st.success() {
+        bail!("git fetch origin failed in {}", repo.display());
+    }
+    let local = git_rev(&repo, "HEAD")?;
+    let upstream = git_rev(&repo, "@{u}")?;
+    if local == upstream {
+        println!("already up to date ({})", &local[..12.min(local.len())]);
+        return Ok(());
+    }
+    println!("behind: local {} -> origin {}", &local[..12.min(local.len())], &upstream[..12.min(upstream.len())]);
+    if check {
+        println!("--check: not pulling. Run `somp update` to pull + rebuild + reinstall.");
+        return Ok(());
+    }
+    let st = std::process::Command::new("git").args(["-C"]).arg(&repo)
+        .args(["pull", "--ff-only", "origin", "main"]).status().context("git pull")?;
+    if !st.success() {
+        bail!("git pull --ff-only failed (local changes? stash first, then `somp update`)");
+    }
+    println!("== rebuild + reinstall ==");
+    let installer = repo.join("install.sh");
+    let st = std::process::Command::new("sh").arg(&installer).status().context("run install.sh")?;
+    if !st.success() {
+        bail!("install.sh failed after pull");
+    }
+    println!("updated to {}", &git_rev(&repo, "HEAD")?[..12]);
+    Ok(())
+}
+
+fn git_rev(repo: &std::path::Path, rev: &str) -> Result<String> {
+    let out = std::process::Command::new("git").args(["-C"]).arg(repo)
+        .args(["rev-parse", rev]).output().context("git rev-parse")?;
+    if !out.status.success() {
+        bail!("git rev-parse {rev} failed (no upstream tracking branch? `git branch --set-upstream-to=origin/main`)");
+    }
+    Ok(String::from_utf8(out.stdout).unwrap_or_default().trim().to_string())
 }
 
 fn level_cmd(cfg: config::Config, level: Option<String>) -> Result<()> {
