@@ -37,6 +37,9 @@ enum Cmd {
     },
     /// Benchmark baseline omp vs sOMP; writes raw JSON artifacts.
     Bench(bench::BenchArgs),
+    /// Show or set the governed security level (strict|standard|off).
+    /// No arg prints the effective level (SOMP_LEVEL env wins over config).
+    Level { level: Option<String> },
     /// Check host tier (KVM/Firecracker candidacy, srt prerequisites).
     Doctor,
 }
@@ -91,10 +94,40 @@ async fn main() -> Result<()> {
     let cfg = config::load()?;
     match cli.cmd {
         Cmd::Doctor => tier::doctor(),
+        Cmd::Level { level } => level_cmd(cfg, level),
         Cmd::Session { op } => session(cfg, op).await,
         Cmd::Dispatch(args) => dispatch::run(&cfg, args).await,
         Cmd::Policy { op } => policy(cfg, op).await,
         Cmd::Bench(args) => bench::run(&cfg, args).await,
+    }
+}
+
+fn level_cmd(cfg: config::Config, level: Option<String>) -> Result<()> {
+    match level {
+        None => {
+            let eff = config::SecurityLevel::effective(cfg.security.level)?;
+            let src = if std::env::var("SOMP_LEVEL").is_ok() { "SOMP_LEVEL env" } else { "config file" };
+            println!("sandbox protection level: {} ({})", eff.badge(), eff.describe());
+            println!("source: {src}");
+            Ok(())
+        }
+        Some(want) => {
+            let want = want.to_lowercase();
+            if !["strict", "standard", "off"].contains(&want.as_str()) {
+                bail!("level must be strict|standard|off, got {want:?}");
+            }
+            // Persist to config file; read-modify-write preserves other keys.
+            let path = config::config_path();
+            let mut raw: serde_yaml::Value = if path.exists() {
+                serde_yaml::from_str(&std::fs::read_to_string(&path)?)?
+            } else {
+                serde_yaml::Value::Mapping(Default::default())
+            };
+            raw["security"]["level"] = serde_yaml::Value::String(want.clone());
+            std::fs::write(&path, serde_yaml::to_string(&raw)?)?;
+            println!("sandbox protection level set to {want} ({})", path.display());
+            Ok(())
+        }
     }
 }
 

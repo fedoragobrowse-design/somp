@@ -40,6 +40,32 @@ export default function sompExt(pi: ExtensionAPI) {
 	const srtWrap = envFlag("SOMP_SRT");
 
 	pi.logger.info(`somp-ext loaded (governed=${governed} srt=${srtWrap})`);
+	// --- 0. Security level: SOMP_LEVEL env wins; else `somp level` (config
+	// file); else strict default. Badge lives in the TUI status bar via
+	// ctx.ui.setStatus (session_start + live update on /somp-level).
+	function resolveLevel(): { level: string; source: string } {
+		const env = process.env.SOMP_LEVEL?.toLowerCase();
+		if (env === "strict" || env === "standard" || env === "off") {
+			return { level: env, source: "SOMP_LEVEL env" };
+		}
+		try {
+			const r = spawnSync(SOMP_PATH, ["level"], { encoding: "utf-8", timeout: 5000 });
+			const m = /level: (\w+)/.exec(r.stdout ?? "");
+			if (m) return { level: m[1].toLowerCase(), source: "somp config" };
+		} catch {
+			/* fall through to default */
+		}
+		return { level: "strict", source: "default" };
+	}
+	const { level: secLevel, source: secSource } = resolveLevel();
+	const levelBadge = (l: string) =>
+		l === "strict" ? "🛡️ STRICT" : l === "standard" ? "🔶 STANDARD" : "⚠️ OFF";
+	pi.logger.info(`somp-ext security level=${secLevel} (${secSource})`);
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		ctx.ui.setStatus("somp-level", `sandbox ${levelBadge(secLevel)}`);
+	});
 
 	// --- 1. Governed mode: block local task spawns, offer somp_task ---
 	if (governed) {
@@ -185,19 +211,43 @@ export default function sompExt(pi: ExtensionAPI) {
 		}
 	}
 
-	// --- 3. /somp-status ---
+	// --- 3. /somp-status + /somp-level ---
+	let cur = { level: secLevel, source: secSource };
 	pi.registerCommand("somp-status", {
-		description: "Show sOMP mode, tier evidence, and seam notes",
+		description: "Show sOMP mode, sandbox protection level, tier evidence",
 		handler: async (_args, ctx) => {
 			const kvm = existsSync("/dev/kvm");
 			const lines = [
 				`somp-ext: governed=${governed} srt=${srtWrap}`,
+				`sandbox protection level: ${levelBadge(cur.level)} (${cur.level}) — ${cur.source}`,
 				`/dev/kvm here: ${kvm} (guest tier evidence; worker tier is authoritative)`,
 				`somp bin: ${SOMP_PATH}`,
 				`srt settings: ${SRT_SETTINGS_PATH}${existsSync(SRT_SETTINGS_PATH) ? "" : " (MISSING)"}`,
 				`seams: block-local-task + somp_task (transparent relocation needs upstream SubagentRunner seam — not present in omp 46ad329)`,
 			];
 			ctx.ui.notify(lines.join("\n"));
+		},
+	});
+	pi.registerCommand("somp-level", {
+		description: "Show or set sandbox protection level: /somp-level [strict|standard|off]",
+		handler: async (args, ctx) => {
+			const want = args.trim().toLowerCase();
+			if (!want) {
+				ctx.ui.notify(`sandbox protection level: ${levelBadge(cur.level)} (${cur.level}) — ${cur.source}\nstrict = Firecracker microVM + Guard + srt · standard = Docker + Guard + srt (dev) · off = no sandboxing (governed work refused)`);
+				return;
+			}
+			if (want !== "strict" && want !== "standard" && want !== "off") {
+				ctx.ui.notify(`unknown level ${JSON.stringify(args.trim())}: want strict|standard|off`);
+				return;
+			}
+			const r = spawnSync(SOMP_PATH, ["level", want], { encoding: "utf-8", timeout: 10000 });
+			if (r.status !== 0) {
+				ctx.ui.notify(`somp level failed: ${(r.stderr ?? "").trim() || "exit " + r.status}`);
+				return;
+			}
+			cur = { level: want, source: "somp config (set via /somp-level)" };
+			ctx.ui.setStatus("somp-level", `sandbox ${levelBadge(want)}`);
+			ctx.ui.notify(`sandbox protection level → ${levelBadge(want)} (${want})`);
 		},
 	});
 }

@@ -17,6 +17,8 @@ pub struct Config {
     pub guard: GuardCfg,
     #[serde(default)]
     pub srt: SrtCfg,
+    #[serde(default)]
+    pub security: SecurityCfg,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -59,6 +61,61 @@ pub struct GuardCfg {
 pub struct SrtCfg {
     #[serde(default = "default_srt_settings")]
     pub settings_path: PathBuf,
+}
+/// Governed security level: what the subagent sandbox enforces.
+/// Env SOMP_LEVEL overrides config file (strict > standard > off).
+/// Fail-closed: unknown values refuse to parse; `off` refuses governed work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityLevel {
+    /// Full stack: Firecracker microVM + Guard model-only + srt inner sandbox.
+    #[default]
+    Strict,
+    /// Docker worker + Guard + srt (dev only: no microVM boundary).
+    Standard,
+    /// No sandboxing: local process only. dispatch/session refuse to run.
+    Off,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SecurityCfg {
+    #[serde(default)]
+    pub level: SecurityLevel,
+}
+impl Default for SecurityCfg {
+    fn default() -> Self {
+        Self { level: SecurityLevel::Strict }
+    }
+}
+
+impl SecurityLevel {
+    /// Effective level: SOMP_LEVEL env wins over config file. Unknown values
+    /// are a hard error (fail-closed: never guess a security posture).
+    pub fn effective(configured: SecurityLevel) -> Result<SecurityLevel> {
+        match std::env::var("SOMP_LEVEL").as_deref() {
+            Ok("") | Err(_) => Ok(configured),
+            Ok("strict") => Ok(SecurityLevel::Strict),
+            Ok("standard") => Ok(SecurityLevel::Standard),
+            Ok("off") => Ok(SecurityLevel::Off),
+            Ok(other) => anyhow::bail!("SOMP_LEVEL must be strict|standard|off, got {other:?}"),
+        }
+    }
+
+    pub fn badge(self) -> &'static str {
+        match self {
+            SecurityLevel::Strict => "STRICT",
+            SecurityLevel::Standard => "STANDARD",
+            SecurityLevel::Off => "OFF",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            SecurityLevel::Strict => "Firecracker microVM + Guard model-only + srt",
+            SecurityLevel::Standard => "Docker worker + Guard + srt (dev only, no microVM)",
+            SecurityLevel::Off => "no sandboxing — governed work refused",
+        }
+    }
 }
 
 fn default_base_url() -> String {
@@ -314,5 +371,25 @@ mod tests {
         let req = c.subagent_create_request(1, 512, 600).unwrap();
         assert_eq!(req["network"], serde_json::json!({"enabled": false}));
         assert_eq!(req["timeout_seconds"], serde_json::json!(600));
+    }
+
+    #[test]
+    fn level_defaults_strict_and_badges() {
+        assert_eq!(Config::default().security.level, SecurityLevel::Strict);
+        assert_eq!(SecurityLevel::Strict.badge(), "STRICT");
+        assert_eq!(SecurityLevel::Standard.badge(), "STANDARD");
+        assert_eq!(SecurityLevel::Off.badge(), "OFF");
+    }
+
+    #[test]
+    fn level_unknown_env_refuses() {
+        let prev = std::env::var("SOMP_LEVEL").ok();
+        std::env::set_var("SOMP_LEVEL", "paranoid!!");
+        let r = SecurityLevel::effective(SecurityLevel::Strict);
+        match prev {
+            Some(v) => std::env::set_var("SOMP_LEVEL", v),
+            None => std::env::remove_var("SOMP_LEVEL"),
+        }
+        assert!(r.is_err(), "unknown SOMP_LEVEL must fail closed, not guess");
     }
 }

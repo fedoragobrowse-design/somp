@@ -41,6 +41,11 @@ cat > "${BIN}/somp-omp" <<EOF
 # Opt-in governed omp: loads the sOMP extension explicitly (-e) with
 # governed mode on. Plain \`omp\` is untouched — use this only when you
 # want subagents in disposable microVMs.
+# AIEC_TLS_CA_CERT: local plane uses a self-signed cert; the SDK reads this
+# env var for the CA (never --insecure). Falls back to ~/.config/aiec/ca.pem.
+if [ -z "\${AIEC_TLS_CA_CERT:-}" ] && [ -f "\$HOME/.config/aiec/ca.pem" ]; then
+  export AIEC_TLS_CA_CERT="\$HOME/.config/aiec/ca.pem"
+fi
 SOMP_BIN="${BIN}/somp" SOMP_GOVERNED=1 exec omp -e "${REPO}/ext/somp-ext.ts" "\$@"
 EOF
 chmod +x "${BIN}/somp-omp"

@@ -66,10 +66,20 @@ pub async fn run(cfg: &Config, args: DispatchArgs) -> Result<()> {
     }
     Ok(())
 }
+/// Fail-closed level gate: `off` refuses governed work outright; strict and
+/// standard both dispatch (worker capability decides the real boundary —
+/// see UNPROVEN.md for Firecracker/Docker status on this host).
+pub fn require_level(cfg: &Config) -> Result<crate::config::SecurityLevel> {
+    let level = crate::config::SecurityLevel::effective(cfg.security.level)?;
+    if level == crate::config::SecurityLevel::Off {
+        anyhow::bail!("fail-closed: sandbox protection level is OFF — governed dispatch refused (somp level strict|standard)");
+    }
+    Ok(level)
+}
 
 pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput> {
+    require_level(cfg)?;
     tier::check()?.require_governed()?;
-    let client = cfg.aiec_client()?;
 
     let task_text = if args.task_file == "-" {
         use std::io::Read as _;
@@ -84,6 +94,7 @@ pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput
     // secret paths are never legitimate task/command/file arguments.
     crate::secrets::deny_secret_paths_in_dispatch(&task_text, &args.command, &args.file)?;
     let t0 = Instant::now();
+    let client = cfg.aiec_client()?;
     let req = cfg.subagent_create_request(args.cpus, args.mem, args.timeout_s)?;
     let sb = client
         .create_sandbox_with_runtime(&req, "firecracker")
