@@ -24,6 +24,9 @@ pub fn check() -> Result<TierCheck> {
     let kvm_module = std::fs::read_to_string("/proc/modules")
         .map(|m| m.lines().any(|l| l.starts_with("kvm")))
         .unwrap_or(false);
+    // /proc/modules misses builtin-kvm hosts (no module row): /dev/kvm
+    // openable is the real signal. Either proves the kernel side.
+    let kvm_openable = std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok();
     let nft_usable = std::process::Command::new("nft")
         .arg("list")
         .arg("ruleset")
@@ -35,7 +38,7 @@ pub fn check() -> Result<TierCheck> {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    let tier = if kvm_present && kvm_module {
+    let tier = if kvm_present && (kvm_module || kvm_openable) {
         Tier::Firecracker
     } else {
         Tier::FallbackNoKvm
@@ -66,8 +69,7 @@ impl TierCheck {
 
 pub fn doctor() -> Result<()> {
     let c = check()?;
-    println!("tier:          {:?}", c.tier);
-    println!("/dev/kvm:      {}", c.kvm_present);
+    println!("/dev/kvm:      {} (openable: {})", c.kvm_present, std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok());
     println!("kvm module:    {}", c.kvm_module);
     println!("nft usable:    {}", c.nft_usable);
     println!("bwrap userns:  {}", c.bwrap_ok);

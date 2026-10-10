@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::aiec::Client;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub aiec: AIecCfg,
@@ -119,16 +119,6 @@ impl Default for SrtCfg {
     fn default() -> Self {
         Self {
             settings_path: default_srt_settings(),
-        }
-    }
-}
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            aiec: AIecCfg::default(),
-            session: SessionCfg::default(),
-            guard: GuardCfg::default(),
-            srt: SrtCfg::default(),
         }
     }
 }
@@ -267,14 +257,14 @@ impl Config {
     }
 
     /// Disposable subagent sandbox: model-endpoint-only Guard, tight TTL.
+    /// (No task label: upstream CreateSandboxRequest has no name/label slot;
+    /// the sandbox id returned at create is the correlation handle.)
     pub fn subagent_create_request(
         &self,
-        task_id: &str,
         cpus: u32,
         mem_mb: u32,
         timeout_s: u64,
     ) -> Result<serde_json::Value> {
-        let _ = task_id;
         Ok(serde_json::json!({
             "image": self.session.image.clone(),
             "cpu": cpus,
@@ -321,7 +311,7 @@ mod tests {
     #[test]
     fn subagent_request_is_governed_short_lived() {
         let c = governed_cfg();
-        let req = c.subagent_create_request("t-1", 1, 512, 600).unwrap();
+        let req = c.subagent_create_request(1, 512, 600).unwrap();
         assert_eq!(req["network"], serde_json::json!({"enabled": false}));
         assert_eq!(req["timeout_seconds"], serde_json::json!(600));
     }

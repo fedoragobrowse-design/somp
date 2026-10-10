@@ -27,19 +27,20 @@
 //! }
 //! ```
 //! Status: DESIGNED 2026-10-10, NOT YET IMPLEMENTED — needs TYPESAFE_API_KEY
-//! + SDK availability check in the guest/operator environment. Recorded in
-//! UNPROVEN.md. No bash runs through the gate until implemented + tested.
-
+//! and an SDK availability check in the guest/operator environment (see
+//! UNPROVEN.md). No bash runs through the gate until implemented + tested.
+//!
 //! Fail-closed contract (boring, no silent downgrade):
-//! - Gate runs BEFORE exec for every command path (default + custom).
-//! - `block` or `confirm` verdict, or p(destructive) > threshold, refuses.
-//! - Classifier unreachable / key missing / timeout / malformed answer =
-//!   REFUSE (never run ungoverned). Operator override is explicit
-//!   `--allow-ungoverned-bash` on the CLI (audited, never default).
-//! - Secret-path deny (secrets.rs) runs first and stays independent: even a
-//!   Jev `allow` never overrides a secret-path hit.
-//! - Verdicts are logged (command hash + verdict + confidence, never the
-//!   secret bytes) for the audit journal.
+//!
+//!   - Gate runs BEFORE exec for every command path (default + custom).
+//!   - `block` or `confirm` verdict, or p(destructive) > threshold, refuses.
+//!   - Classifier unreachable / key missing / timeout / malformed answer =
+//!     REFUSE (never run ungoverned). Operator override is explicit
+//!     `--allow-ungoverned-bash` on the CLI (audited, never default).
+//!   - Secret-path deny (secrets.rs) runs first and stays independent: even a
+//!     Jev `allow` never overrides a secret-path hit.
+//!   - Verdicts are logged (command hash + verdict + confidence, never the
+//!     secret bytes) for the audit journal.
 //!
 //! Wiring: the gate lives in the extension's bash-rewrite path
 //! (ext/somp-ext.ts §2) + dispatch custom --command path. Both call
@@ -47,8 +48,8 @@
 //! `TYPESAFE_API_KEY` env (SDK convention), never baked into configs.
 //!
 //! Status: DESIGNED 2026-10-10, NOT YET IMPLEMENTED — needs TYPESAFE_API_KEY
-//! + SDK availability check in the guest/operator environment. Recorded in
-//! UNPROVEN.md. No bash runs through the gate until implemented + tested.
+//! and an SDK availability check (see UNPROVEN.md). No bash runs through the
+//! gate until implemented + tested.
 
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};

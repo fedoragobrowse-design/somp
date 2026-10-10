@@ -1,10 +1,11 @@
 //! Benchmarks: baseline omp vs sOMP. Raw JSON artifacts, honest numbers.
 //!
 //! Methods (each 20 reps default):
-//! - local-exec: /usr/bin/time -v `true` + srt `true` (srt-in-host cost proxy).
+//! - local-exec: `true` + srt-wrapped `true` via SOMP_SRT_BIN (srt-in-host cost proxy).
 //! - spawn-probe: measures CLI dispatch path construction (no control plane).
 //! - control-plane benches (create/exec/diff/destroy) run only with --aiec and
 //!   a live control plane; otherwise recorded as not-run with the reason.
+//! - max_rss_kb is None: per-subagent RSS needs worker-side reporting (UNPROVEN).
 
 use anyhow::Result;
 use clap::Args;
@@ -181,9 +182,9 @@ pub async fn run(_cfg: &Config, args: BenchArgs) -> Result<()> {
     let art = Artifact {
         tool: "somp bench".into(),
         revs: serde_json::json!({
-            "somp": "phase2-dev",
+            "somp": "see git HEAD at bench time (this binary embeds no rev)",
             "omp": "46ad32961a96aef21cd35fe615374f4b3675ca58",
-            "aiec": "0f516df43943aad0efc3e2be32b69fdc1ed0a895",
+            "aiec": "ebc41ac (pinned 2026-10-10; was 0f516df)",
             "srt": "4160dcde76f9905268cb76826381665c422bfbf6",
         }),
         host: host_doc()?,

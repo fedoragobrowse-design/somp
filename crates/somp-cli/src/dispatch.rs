@@ -44,7 +44,11 @@ pub async fn run(cfg: &Config, args: DispatchArgs) -> Result<()> {
     // result file would otherwise leak via git_diff.
     let stdout = crate::secrets::scrub(&out.stdout);
     let stderr = crate::secrets::scrub(&out.stderr);
-    let diff = crate::secrets::scrub(&serde_json::to_string(&out.diff).unwrap_or_default());
+    // Scrub the serialized diff, then parse back to a Value so consumers see
+    // the same shape as the server returned (a secret exfiltrated into a
+    // result file would otherwise leak via git_diff).
+    let diff_scrubbed = crate::secrets::scrub(&serde_json::to_string(&out.diff).unwrap_or_default());
+    let diff: serde_json::Value = serde_json::from_str(&diff_scrubbed).unwrap_or(serde_json::Value::Null);
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -66,7 +70,6 @@ pub async fn run(cfg: &Config, args: DispatchArgs) -> Result<()> {
 pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput> {
     tier::check()?.require_governed()?;
     let client = cfg.aiec_client()?;
-    let task_id = uuid::Uuid::new_v4().to_string();
 
     let task_text = if args.task_file == "-" {
         use std::io::Read as _;
@@ -81,7 +84,7 @@ pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput
     // secret paths are never legitimate task/command/file arguments.
     crate::secrets::deny_secret_paths_in_dispatch(&task_text, &args.command, &args.file)?;
     let t0 = Instant::now();
-    let req = cfg.subagent_create_request(&task_id, args.cpus, args.mem, args.timeout_s)?;
+    let req = cfg.subagent_create_request(args.cpus, args.mem, args.timeout_s)?;
     let sb = client
         .create_sandbox_with_runtime(&req, "firecracker")
         .await
@@ -144,7 +147,14 @@ async fn dispatch_inner(
         .await
         .context("stage TASK.md")?;
     for spec in &args.file {
-        let (guest, host) = spec.split_once('=').with_context(|| format!("--file must be <guest>=<host>, got {spec:?}"))?;
+        // Split at the LAST '=': host temp paths may contain '=' (guest
+        // staging paths never legitimately do). Reject '..': guest escapes
+        // REPO and the server diff (hardcoded to /workspace/repository)
+        // would silently miss the file.
+        let (guest, host) = spec.rsplit_once('=').with_context(|| format!("--file must be <guest>=<host>, got {spec:?}"))?;
+        if guest.split('/').any(|c| c == "..") {
+            anyhow::bail!("--file guest path must stay under /workspace/repository, got {guest:?}");
+        }
         let guest = guest.strip_prefix("/workspace/").unwrap_or(guest);
         let guest = guest.strip_prefix('/').unwrap_or(guest);
         let bytes = std::fs::read(host).with_context(|| format!("read {host}"))?;
@@ -181,6 +191,11 @@ async fn dispatch_inner(
             format!("cat {REPO}/TASK.md"),
         ]
     } else {
+        // Custom commands bypass the srt wrapper: the Guard boundary still
+        // holds (network-off + model-endpoint-only), but in-guest filesystem
+        // enforcement is whatever the operator's command provides. Loud on
+        // purpose — silence here would be fail-open.
+        eprintln!("warning: custom --command runs WITHOUT the srt wrapper (Guard boundary still applies)");
         args.command.clone()
     };
     let r = client
@@ -216,12 +231,42 @@ async fn dispatch_inner(
 
 #[cfg(test)]
 mod tests {
-    // no imports needed: file_spec_split exercises only stdlib split_once
+    // no imports needed: these exercise only stdlib string ops that mirror
+    // the dispatch_inner parsing (rsplit_once + '..' component check).
 
     #[test]
     fn file_spec_split() {
-        let (g, h) = "/workspace/a.txt=/tmp/a.txt".split_once('=').unwrap();
+        let (g, h) = "/workspace/a.txt=/tmp/a.txt".rsplit_once('=').unwrap();
         assert_eq!(g, "/workspace/a.txt");
         assert_eq!(h, "/tmp/a.txt");
+    }
+
+    #[test]
+    fn file_spec_splits_at_last_equals() {
+        // Host temp paths may contain '=': rsplit at the LAST '=' keeps the
+        // guest staging path whole (guest names never contain '=').
+        let (g, h) = "ctx.md=/tmp/with=equals/x.md".rsplit_once('=').unwrap();
+        assert_eq!(g, "ctx.md=/tmp/with");
+        assert_eq!(h, "equals/x.md");
+    }
+
+    #[test]
+    fn file_spec_dotdot_rejected() {
+        for bad in ["../evil.sh", "a/../../evil.sh", "/workspace/../evil.sh"] {
+            assert!(bad.split('/').any(|c| c == ".."), "{bad:?} must trip the '..' component check");
+        }
+        for good in ["ctx.md", "sub/dir/a.txt", "/workspace/repository/a.txt"] {
+            assert!(!good.split('/').any(|c| c == ".."), "{good:?} must pass");
+        }
+    }
+
+    #[test]
+    fn scrubbed_diff_keeps_value_shape() {
+        // run() scrubs the serialized diff then parses back to Value: the
+        // envelope must carry an object, not a JSON-encoded string.
+        let diff = serde_json::json!({"files": ["a.txt"], "patch": "abc"});
+        let round: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&diff).unwrap()).unwrap();
+        assert_eq!(round, diff);
     }
 }

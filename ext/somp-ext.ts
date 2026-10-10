@@ -23,6 +23,8 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { unlink } from "node:fs/promises";
 
 function envFlag(name: string): boolean {
 	const v = process.env[name];
@@ -72,12 +74,17 @@ export default function sompExt(pi: ExtensionAPI) {
 			}),
 			async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
 				const bin = SOMP_PATH;
-				const tmpTask = `${process.env.TMPDIR ?? "/tmp"}/somp-task-${Date.now()}-${process.pid}.md`;
+				// randomBytes, not Date.now-pid: two same-ms dispatches from
+				// forked operator processes would share (and race on) one path.
+				const tmpTask = `${process.env.TMPDIR ?? "/tmp"}/somp-task-${randomBytes(8).toString("hex")}.md`;
 				await Bun.write(tmpTask, params.prompt as string);
 				try {
 					const args = ["dispatch", "--task-file", tmpTask];
+					// Indexed guest names (context-0-foo.py, …): two host files
+					// with the same basename would otherwise collide in REPO.
+					let i = 0;
 					for (const f of (params.files as string[] | undefined) ?? []) {
-						args.push("--file", `/workspace/repository/${f.split("/").pop()}=${f}`);
+						args.push("--file", `/workspace/repository/context-${i++}-${f.split("/").pop()}=${f}`);
 					}
 					if (params.timeout_s !== undefined) {
 						args.push("--timeout-s", String(params.timeout_s));
@@ -143,10 +150,11 @@ export default function sompExt(pi: ExtensionAPI) {
 						...(out.exit_code !== 0 ? { isError: true } : {}),
 					};
 				} finally {
+					// unlink, not `rm -f ${tmpTask}` through a shell: Bun.$
+					// interpolates into sh source (space/metachar injection);
+					// TMPDIR-owned path + unlink is exact.
 					try {
-						await Bun.file(tmpTask).exists().then(async ok => {
-							if (ok) await Bun.$`rm -f ${tmpTask}`.quiet();
-						});
+						await unlink(tmpTask);
 					} catch {
 						/* best effort */
 					}

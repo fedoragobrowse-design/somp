@@ -154,9 +154,11 @@ async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
                 bail!("nothing to exec");
             }
             let st = config::session_state_load()?.context("no session (somp session up first)")?;
+            crate::secrets::deny_secret_paths_in_dispatch("", &command, &[])?;
             let r = client.exec_command(st.id, command, None, 300).await?;
-            print!("{}", r.stdout);
-            eprint!("{}", r.stderr);
+            // Same print boundary as dispatch: scrub before persisting to terminal.
+            print!("{}", crate::secrets::scrub(&r.stdout));
+            eprint!("{}", crate::secrets::scrub(&r.stderr));
             if r.exit_code != 0 {
                 bail!("remote exit {}", r.exit_code);
             }
@@ -192,9 +194,21 @@ async fn policy(cfg: config::Config, op: PolicyOp) -> Result<()> {
             // out loud what the destination is for (server-enforced).
             let mut allow = Vec::new();
             for h in &add_host {
+                // Bare IPv6 (`::1`) is ambiguous with host:port — require
+                // brackets. Anything else with >1 colon is refused, not guessed.
+                if h.contains(':') && !(h.starts_with('[') && h.contains("]:")) && h.matches(':').count() != 1 {
+                    bail!("--add-host IPv6 must be [addr]:port, got {h:?}");
+                }
                 let (host, port) = match h.rsplit_once(':') {
-                    Some((host, p)) => (host.to_string(), p.parse().unwrap_or(443)),
-                    None => (h.clone(), 443),
+                    // Bracketed [addr]:port: strip brackets, strict port parse
+                    // (garbage port silently becoming 443 would widen egress).
+                    Some((host, p)) if h.matches(':').count() == 1 || h.contains("]:") => {
+                        let host = host.strip_prefix('[').unwrap_or(host);
+                        let (host, _) = host.split_once(']').unwrap_or((host, ""));
+                        let port: u16 = p.parse().with_context(|| format!("--add-host port must be 1-65535, got {p:?}"))?;
+                        (host.to_string(), port)
+                    }
+                    _ => (h.clone(), 443),
                 };
                 allow.push(serde_json::json!({ "host": host, "port": port }));
             }
