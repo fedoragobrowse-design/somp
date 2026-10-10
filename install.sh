@@ -56,7 +56,7 @@ else
   fi
   (cd "${HOME}/.cache/somp/repos/aiec" && cargo build --release -p aiec-api -p aiec-cli -p aiec-mcp)
   mkdir -p "${BIN}"
-  for b in aiec aiec-mcp; do
+  for b in aiec aiec-mcp aiec-server; do
     if [ -x "${HOME}/.cache/somp/repos/aiec/target/release/${b}" ]; then
       ln -sf "${HOME}/.cache/somp/repos/aiec/target/release/${b}" "${BIN}/${b}"
       echo "linked ${BIN}/${b}"
