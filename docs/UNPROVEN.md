@@ -236,3 +236,29 @@
   line: `sudo setcap cap_net_admin+ep ~/aiec/bin/aiec`, then the global
   `/usr/bin/nft` cap can come off (worker children inherit). Binary swaps
   need re-cap (runbook).
+
+## It works: standard dispatch green end-to-end (2026-10-10)
+
+- `SOMP_LEVEL=standard somp dispatch --task-file ... --command echo PROOF-RAN`
+  → `exit_code 0`, `stdout PROOF-RAN`, sandbox `state: destroyed`, workspace
+  dir gone, process exit 0. Full create→stage→exec→diff→destroy cycle green.
+- What made it work without root:
+  1. `environment_json(level)`: strict sends `{guard}`, standard sends `{}`
+     (docker hardcodes `network_policy:false` so guarded placement can NEVER
+     match it, even with AIEC_ALLOW_REDUCED_ISOLATION=1 — reverted that flag).
+     With `network.enabled=false` the guest gets NO NIC: egress impossible by
+     absence. `describe()` says so explicitly; never presented as Guard.
+  2. Guest-side workspace scrub after diff: rootless Docker maps the container
+     user to host subuid 525287, worker-as-gobrowse cannot reclaim → destroy
+     503. `rm -rf` from inside runs as the owning uid → reclaim succeeds.
+     Destroy stays the hard orphan gate; scrub failure only warns.
+- Proven numbers: start_ms 394, duration 525ms (docker Exec warm).
+- Still needs root (one system unit, drafted on request): strict
+  firecracker+Guard (TAP via `ip`, nft fence) — fail-closed until then.
+  Default srt command path needs the `somp-guest` image (unbuilt) —
+  `/opt/somp/bin/srt` absent in plain alpine (exit 127, honest error).
+- JEV: custom --command correctly refused pre-VM without key; proof used the
+  explicit `somp jev off --allow-ungoverned-bash` hatch, config restored after.
+- Local Postgres: plane healthy, bootstrap key 200, old Neon URL kept in
+  `~/aiec/env.systemd.neon-bak-2026-10-10` for rollback. Neon password seen in
+  transcript earlier → rotate `neondb_owner` when convenient.

@@ -237,6 +237,28 @@ async fn dispatch_inner(
         .await
         .context("intent-to-add new outputs")?;
     let diff = client.git_diff(id).await.unwrap_or(serde_json::Value::Null);
+    // Guest-side scrub AFTER the diff is collected: rootless Docker maps the
+    // container user to a host subuid, so guest-created files come out owned
+    // by e.g. 525287 and the worker (running as gobrowse) cannot reclaim the
+    // workspace → destroy 503s and every run exits non-zero despite success.
+    // Removing contents from INSIDE runs as the owning uid, so it succeeds;
+    // the diff above already captured everything. Best-effort only: failure
+    // warns, and destroy stays the hard orphan gate.
+    if let Err(e) = client
+        .exec_command(
+            id,
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!("rm -rf {REPO}/.git {REPO}/* {REPO}/.[!.]* 2>/dev/null; true"),
+            ],
+            Some("/workspace".into()),
+            60,
+        )
+        .await
+    {
+        eprintln!("warning: guest workspace scrub failed ({e:#}); destroy may 503 on reclaim");
+    }
     Ok(DispatchOutput {
         sandbox_id: id_str.to_owned(),
         exit_code: r.exit_code,

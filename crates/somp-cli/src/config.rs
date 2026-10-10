@@ -134,8 +134,8 @@ impl SecurityLevel {
     }
     pub fn describe(self) -> &'static str {
         match self {
-            SecurityLevel::Strict => "Firecracker microVM + Guard model-only + srt",
-            SecurityLevel::Standard => "Docker worker + Guard + srt (dev only, no microVM)",
+            SecurityLevel::Strict => "Firecracker microVM + Guard model-only + srt (needs worker egress caps)",
+            SecurityLevel::Standard => "Docker container, NO network interface, srt (no Guard broker)",
             SecurityLevel::Off => "no sandboxing — governed work refused",
         }
     }
@@ -363,7 +363,28 @@ impl Config {
         Ok(guard)
     }
 
+    /// Guard env per level (verified against AIec source 2026-10-10):
+    /// - Strict pins firecracker + Guard: full sOMP boundary. Needs a worker
+    ///   that can enforce egress (nft/CAP_NET_ADMIN on the worker host); the
+    ///   plane fail-closes at placement otherwise — never silently ungoverned.
+    /// - Standard runs Docker WITHOUT a guard env: Docker hardcodes
+    ///   `network_policy:false` (docker.rs capabilities) so the scheduler can
+    ///   never place guarded work on it, even with
+    ///   AIEC_ALLOW_REDUCED_ISOLATION=1 (that flag only clears admission, not
+    ///   placement). With `network.enabled=false` the guest gets NO network
+    ///   interface at all, so egress is impossible by absence; container +
+    ///   srt still bound the damage a malicious task can do. Documented in
+    ///   `describe()`, never presented as Guard-enforced.
+    fn environment_json(&self, level: SecurityLevel) -> Result<serde_json::Value> {
+        match level {
+            SecurityLevel::Strict => Ok(serde_json::json!({ "guard": self.guard_json()? })),
+            SecurityLevel::Standard => Ok(serde_json::json!({})),
+            SecurityLevel::Off => anyhow::bail!("fail-closed: level is OFF"),
+        }
+    }
+
     pub fn session_create_request(&self, args: &SessionArgs) -> Result<serde_json::Value> {
+        let level = SecurityLevel::effective(self.security.level)?;
         Ok(serde_json::json!({
             "image": args.image.clone().unwrap_or_else(|| self.session.image.clone()),
             "cpu": args.cpus.unwrap_or(self.session.cpus),
@@ -371,11 +392,12 @@ impl Config {
             "disk_mb": self.session.disk_mb,
             "timeout_seconds": self.session.ttl_s,
             "network": { "enabled": false },
-            "environment": { "guard": self.guard_json()? },
+            "environment": self.environment_json(level)?,
         }))
     }
 
-    /// Disposable subagent sandbox: model-endpoint-only Guard, tight TTL.
+    /// Disposable subagent sandbox: Guard on strict, no-NIC container on
+    /// standard (see environment_json). Tight TTL.
     /// (No task label: upstream CreateSandboxRequest has no name/label slot;
     /// the sandbox id returned at create is the correlation handle.)
     pub fn subagent_create_request(
@@ -384,6 +406,7 @@ impl Config {
         mem_mb: u32,
         timeout_s: u64,
     ) -> Result<serde_json::Value> {
+        let level = SecurityLevel::effective(self.security.level)?;
         Ok(serde_json::json!({
             "image": self.session.image.clone(),
             "cpu": cpus,
@@ -391,7 +414,7 @@ impl Config {
             "disk_mb": self.session.disk_mb,
             "timeout_seconds": timeout_s,
             "network": { "enabled": false },
-            "environment": { "guard": self.guard_json()? },
+            "environment": self.environment_json(level)?,
         }))
     }
 }
