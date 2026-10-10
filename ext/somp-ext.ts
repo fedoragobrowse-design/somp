@@ -66,6 +66,18 @@ export default function sompExt(pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		ctx.ui.setStatus("somp-level", `sandbox ${levelBadge(secLevel)}`);
 	});
+	// Governed resume: omp prints `omp --resume <id>` on TUI exit, which
+	// would reload the session WITHOUT this extension (unguarded). The
+	// wrapper passes argv through, so `somp-omp --resume <id>` keeps the
+	// governed seam. Remind on shutdown; the id is on omp's hint line.
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (!governed) return;
+		const msg =
+			"sOMP: to stay governed, resume with `somp-omp --resume <id>` " +
+			"(same <id> as omp's hint above) — plain `omp --resume` loads UNgoverned.";
+		if (ctx.hasUI) ctx.ui.notify(msg);
+		else process.stderr.write(`\n${msg}\n`);
+	});
 
 	// --- 1. Governed mode: block local task spawns, offer somp_task ---
 	if (governed) {
