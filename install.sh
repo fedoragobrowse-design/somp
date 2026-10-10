@@ -29,7 +29,7 @@ BIN="${PREFIX}/bin"
 CFGDIR="${HOME}/.config/somp"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
-
+need cargo; need bun; need git
 # --- omp itself: install if missing (pinned canonical source), never touch config.
 if ! command -v omp >/dev/null 2>&1; then
   echo "== omp not found — installing (https://omp.sh/install) =="
@@ -74,6 +74,10 @@ fi
 echo "== model auth check =="
 if [ -n "${OPENCODE_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "provider key in env OK (name only, never printed)"
+# omp stores login credentials file-based (agent/config.yml); the sqlite
+# auth_credential_blocks table is empty on file-auth setups — check the file.
+elif grep -qi "api_key\|oauth\|opencode" "${HOME}/.omp/agent/config.yml" 2>/dev/null; then
+  echo "stored omp credentials in agent/config.yml OK"
 elif command -v sqlite3 >/dev/null 2>&1 && [ -f "${HOME}/.omp/agent/agent.db" ]; then
   NCRED=$(sqlite3 "${HOME}/.omp/agent/agent.db" "SELECT count(*) FROM auth_credential_blocks;" 2>/dev/null || echo "?")
   if [ "${NCRED}" != "?" ] && [ "${NCRED}" -gt 0 ]; then
@@ -83,7 +87,7 @@ elif command -v sqlite3 >/dev/null 2>&1 && [ -f "${HOME}/.omp/agent/agent.db" ];
     echo "      (Claude Pro/Max OAuth) or set OPENCODE_API_KEY, then re-run."
   fi
 else
-  echo "NOTE: cannot verify omp auth (no sqlite3) — ensure 'omp login' done."
+  echo "NOTE: cannot verify omp auth — ensure 'omp login' done."
 fi
 # Skills/MCP: sOMP installs none. somp-omp IS omp (+1 extension flag), so
 # your skills (~/.omp/skillshare, project dirs) and MCP servers load as in
