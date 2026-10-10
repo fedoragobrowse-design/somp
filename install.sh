@@ -29,7 +29,39 @@ BIN="${PREFIX}/bin"
 CFGDIR="${HOME}/.config/somp"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
-need cargo; need bun
+
+# --- omp itself: install if missing (pinned canonical source), never touch config.
+if ! command -v omp >/dev/null 2>&1; then
+  echo "== omp not found — installing (https://omp.sh/install) =="
+  need curl
+  curl -fsSL https://omp.sh/install | sh
+  command -v omp >/dev/null 2>&1 || { echo "omp install failed" >&2; exit 1; }
+else
+  echo "== omp present: $(command -v omp) ($(omp --version 2>/dev/null | head -1)) =="
+fi
+
+# --- model auth: fast local presence check only (no network, no secrets).
+# sOMP passes --model/auth straight through to omp (proven: MODELPROOF via
+# opencode-go/muse-spark-1.3-contributor), so any omp login works governed.
+# Claude paths: `omp login anthropic` (Pro/Max OAuth) or an opencode-go key
+# (OPENCODE_API_KEY) for the muse-spark subscription lanes.
+echo "== model auth check =="
+if [ -n "${OPENCODE_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "provider key in env OK (name only, never printed)"
+elif command -v sqlite3 >/dev/null 2>&1 && [ -f "${HOME}/.omp/agent/agent.db" ]; then
+  NCRED=$(sqlite3 "${HOME}/.omp/agent/agent.db" "SELECT count(*) FROM auth_credential_blocks;" 2>/dev/null || echo "?")
+  if [ "${NCRED}" != "?" ] && [ "${NCRED}" -gt 0 ]; then
+    echo "stored omp credentials: ${NCRED} block(s) OK"
+  else
+    echo "NOTE: no omp credentials found — run: omp login anthropic"
+    echo "      (Claude Pro/Max OAuth) or set OPENCODE_API_KEY, then re-run."
+  fi
+else
+  echo "NOTE: cannot verify omp auth (no sqlite3) — ensure 'omp login' done."
+fi
+# Skills/MCP: sOMP installs none. somp-omp IS omp (+1 extension flag), so
+# your skills (~/.omp/skillshare, project dirs) and MCP servers load as in
+# plain omp. Allow-list only: nothing auto-enabled here.
 
 echo "== build somp =="
 (cd "${REPO}/crates/somp-cli" && cargo build --release)
