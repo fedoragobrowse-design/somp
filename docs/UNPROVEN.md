@@ -323,3 +323,33 @@
      --command echo --command PROOF-RAN` with `image: somp-guest`.
   4. Expect guest env `AIEC_MODEL_BASE_URL=http://<gw>:8443/model/model-main/zen/go/v1`
      + `AIEC_MODEL_API_KEY=placeholder://model-main`.
+
+## Local plane live (2026-10-10): standard dispatch green on loopback
+- Shape: `postgres:16-alpine` (loopback `127.0.0.1:15432`, volume `somp-pgdata`)
+  + MinIO `agentforge-minio` (loopback `:19000`, bucket `aiec`, keys `aiec`
+  dev-only in `~/.local/share/somp-local/.env.local` 0600) + `aiec-server`
+  TLS (`:18444`, self-signed CA `tls/ca.pem`) + docker worker TLS (`:9091`,
+  `--capacity 4`).
+- Why not lighter: this AIec build has no sqlite — server requires
+  `DATABASE_URL` + `AIEC_S3_*` + `AIEC_TLS_CERT_FILE/KEY_FILE` in production;
+  in-memory mode refuses worker registration ("ephemeral deployments cannot
+  accept workers"). bwrap-dev refused (self-host loopback counts production).
+- Fixes found wiring it: `AIEC_ALLOW_CONTAINER_RUNTIMES=1` (default
+  `hosted_only` refuses docker), `AIEC_TLS_CA_CERT` needed on the SERVER too
+  (`HttpWorkerClient::new_secure` → `control_plane_http_client` reads it),
+  worker needs same TLS cert files + `https://` advertise URL, capacity 4
+  (stuck `destroying` row from pre-TLS attempt holds 1 slot; DELETE wedged on
+  dead transport — capacity headroom routes around it).
+- Proof: `SOMP_LEVEL=standard somp dispatch --task-file /tmp/proof-task.md
+  --command echo --command PROOF-RAN` → `exit_code 0`, `stdout PROOF-RAN`,
+  `duration_ms 405`. Config restored fail-closed (`image: somp-guest`,
+  `allow_ungoverned_bash: false`, `enabled: true`).
+- Footprint (idle): aiec-server RSS ~17MB, worker ~18MB, postgres ~78MB,
+  minio ~75MB → ~190MB total. Images: minio 213MB + postgres 303MB virtual
+  (cached pulls, shared layers). State dir 268K + pg volume + minio-data.
+- somp now points at local plane: `base_url https://127.0.0.1:18444`,
+  `~/.config/aiec/api-key` = local key (NUC key in `api-key.nuc-era-bak`),
+  CA `~/.config/aiec/ca-somp-local.pem` via `AIEC_TLS_CA_CERT`.
+- UNPROVEN: strict (no firecracker/KVM here), JEV live (no TYPESAFE key),
+  stuck `destroying` row cleanup, multi-sandbox concurrency, restart
+  persistence (manual `nohup` — no systemd unit yet).
