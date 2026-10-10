@@ -60,6 +60,23 @@ pub struct GuardCfg {
     /// https://opencode.ai/zen/go/v1, verified in omp models.json).
     pub model_host: Option<String>,
     pub model_port: Option<u16>,
+    /// Credential header Guard substitutes the secret into. Default
+    /// "authorization" (template path). The muse-spark preset pins
+    /// "x-api-key": omp's own wire code drops the auto-built Authorization
+    /// header for opencode-go and emits X-Api-Key instead (packages/ai/src/
+    /// providers/anthropic.ts, issue #6510), while the ModelOnly template
+    /// hardcodes header=authorization (aiec-guard policy.rs template()).
+    /// Any non-authorization value switches guard_json to an explicit
+    /// GuardPolicy (the template path cannot express another header).
+    #[serde(default = "default_credential_header")]
+    pub model_credential_header: String,
+    /// Path prefix the guest model path must live under. Default "/v1/".
+    /// The muse-spark preset pins "/zen/go/v1/": the gateway forwards the
+    /// stripped guest path verbatim ({scheme}://{host}:{port}{path}), and
+    /// spark's responses API lives at https://opencode.ai/zen/go/v1, so the
+    /// guest must address .../model/model-main/zen/go/v1 as its base.
+    #[serde(default = "default_model_path")]
+    pub model_path: String,
 }
 
 /// JEV bash-gate config: classifier that must Allow a command before exec.
@@ -185,6 +202,12 @@ fn default_ttl() -> u64 {
 fn default_template() -> String {
     "model-only".into()
 }
+fn default_credential_header() -> String {
+    "authorization".into()
+}
+fn default_model_path() -> String {
+    "/v1/".into()
+}
 fn default_jev_model() -> String {
     "jev-latest".into()
 }
@@ -221,6 +244,8 @@ impl Default for GuardCfg {
             template: default_template(),
             model_host: None,
             model_port: None,
+            model_credential_header: default_credential_header(),
+            model_path: default_model_path(),
         }
     }
 }
@@ -344,23 +369,67 @@ impl Config {
     ///   network.rs Serialize impl); guarded sandboxes carry NO guest NIC —
     ///   the model path is brokered via the worker gateway (aiec-cli main.rs
     ///   sets NetworkPolicy::Disabled alongside resources.guard).
-    /// - environment.guard is a GuardConfig: {policy_template (kebab-case),
-    ///   model_endpoint?} (aiec-guard policy.rs). ModelOnly REQUIRES an
-    ///   endpoint (template(ModelOnly, None, _) is Err) — missing config is
-    ///   a build-time bail, never a silent no-network downgrade.
+    /// - environment.guard is a GuardConfig (aiec-guard policy.rs): either a
+    ///   template ({policy_template kebab-case, model_endpoint?}) or an
+    ///   explicit {policy}. ModelOnly REQUIRES an endpoint
+    ///   (template(ModelOnly, None, _) is Err) — missing config is a
+    ///   build-time bail, never a silent no-network downgrade.
+    /// - Template path hardcodes credential header=authorization (policy.rs
+    ///   template()). muse-spark needs x-api-key (omp drops Authorization
+    ///   for opencode-go, #6510): any non-authorization header switches to
+    ///   an explicit GuardPolicy pinning the same destination + header, with
+    ///   POST-only + path prefix + binding-agrees-with-model + zone-covers-
+    ///   egress invariants (policy.rs validate_model_binding,
+    ///   validate_dns_egress_consistency). Request carries names only — the
+    ///   secret lives in the worker-host file (AIEC_GUARD_CREDENTIALS_FILE).
     fn guard_json(&self) -> Result<serde_json::Value> {
         let template = self.guard.template.clone();
-        let mut guard = serde_json::json!({ "policy_template": template });
-        if template == "model-only" || template == "model-plus-allowlist" {
-            let (Some(host), Some(port)) = (self.guard.model_host.clone(), self.guard.model_port) else {
-                anyhow::bail!(
-                    "guard template {template:?} needs guard.model_host + guard.model_port \
-                     in config.yaml (server refuses ModelOnly without an endpoint)"
-                );
-            };
-            guard["model_endpoint"] = serde_json::json!({ "host": host, "port": port });
+        let (Some(host), Some(port)) = (self.guard.model_host.clone(), self.guard.model_port) else {
+            anyhow::bail!(
+                "guard template {template:?} needs guard.model_host + guard.model_port \
+                 in config.yaml (server refuses ModelOnly without an endpoint)"
+            );
+        };
+        let header = self.guard.model_credential_header.clone();
+        let path = self.guard.model_path.clone();
+        if header.eq_ignore_ascii_case("authorization") && template == "model-only" && path == "/v1/" {
+            return Ok(serde_json::json!({
+                "policy_template": template,
+                "model_endpoint": { "host": host, "port": port },
+            }));
         }
-        Ok(guard)
+        // Explicit policy: the template path cannot express a non-default
+        // header or path. Shape pinned to GuardPolicy::validate() rules:
+        // version 1, single egress rule + matching DNS zone + bound
+        // credential, POST-only, explicit path prefix.
+        if !path.starts_with('/') || path.contains(' ') || path.contains(|c: char| c.is_ascii_control()) {
+            anyhow::bail!("guard.model_path {path:?} must start with '/' with no spaces/controls");
+        }
+        let header_lc = header.to_ascii_lowercase();
+        if header_lc != "authorization" && header_lc != "x-api-key" {
+            anyhow::bail!("guard.model_credential_header {header:?}: want authorization|x-api-key");
+        }
+        Ok(serde_json::json!({
+            "topology": "inside",
+            "policy": {
+                "version": 1,
+                "network": {
+                    "dns": { "allowed_zones": [host], "allowed_record_types": ["A", "AAAA"] },
+                    "egress": [{
+                        "host": host, "port": port, "protocol": "tcp",
+                        "allowed_methods": ["POST"], "allowed_paths": [path],
+                    }],
+                },
+                "model": {
+                    "host": host, "port": port, "scheme": "https",
+                    "allowed_methods": ["POST"], "allowed_paths": [path],
+                    "credential": "model-main",
+                },
+                "credentials": [{
+                    "name": "model-main", "host": host, "port": port, "header": header_lc,
+                }],
+            },
+        }))
     }
 
     /// Guard env per level (verified against AIec source 2026-10-10):
@@ -430,8 +499,24 @@ mod tests {
         c
     }
 
+    fn scrub_somp_level() -> Option<String> {
+        // SOMP_LEVEL env wins over the config struct: every request-builder
+        // test must scrub it first or the dev shell's export leaks in.
+        // Returns the previous value for restore.
+        let prev = std::env::var("SOMP_LEVEL").ok();
+        std::env::remove_var("SOMP_LEVEL");
+        prev
+    }
+    fn restore_somp_level(prev: Option<String>) {
+        match prev {
+            Some(v) => std::env::set_var("SOMP_LEVEL", v),
+            None => std::env::remove_var("SOMP_LEVEL"),
+        }
+    }
+
     #[test]
     fn defaults_are_governed() {
+        let prev = scrub_somp_level();
         let c = governed_cfg();
         assert_eq!(c.guard.template, "model-only");
         let req = c.session_create_request(&SessionArgs {
@@ -439,23 +524,89 @@ mod tests {
             cpus: None,
             mem: None,
         }).unwrap();
-        assert_eq!(req["network"], serde_json::json!({"enabled": false}));
-        assert_eq!(req["environment"]["guard"]["policy_template"], serde_json::json!("model-only"));
-        assert_eq!(req["environment"]["guard"]["model_endpoint"]["host"], serde_json::json!("api.example-model.com"));
+        let ok = req["network"] == serde_json::json!({"enabled": false})
+            && req["environment"]["guard"]["policy_template"] == serde_json::json!("model-only")
+            && req["environment"]["guard"]["model_endpoint"]["host"] == serde_json::json!("api.example-model.com");
+        restore_somp_level(prev);
+        assert!(ok, "default strict request must pin guard policy + endpoint");
     }
-
     #[test]
     fn missing_endpoint_is_build_error_not_downgrade() {
+        let prev = scrub_somp_level();
         let c = Config::default();
-        assert!(c.session_create_request(&SessionArgs { image: None, cpus: None, mem: None }).is_err());
+        let r = c.session_create_request(&SessionArgs { image: None, cpus: None, mem: None }).is_err();
+        restore_somp_level(prev);
+        assert!(r, "model-only without endpoint must bail, never downgrade");
     }
 
     #[test]
     fn subagent_request_is_governed_short_lived() {
+        let prev = scrub_somp_level();
         let c = governed_cfg();
         let req = c.subagent_create_request(1, 512, 600).unwrap();
-        assert_eq!(req["network"], serde_json::json!({"enabled": false}));
-        assert_eq!(req["timeout_seconds"], serde_json::json!(600));
+        let ok = req["network"] == serde_json::json!({"enabled": false})
+            && req["timeout_seconds"] == serde_json::json!(600);
+        restore_somp_level(prev);
+        assert!(ok, "subagent request must pin no-NIC + TTL");
+    }
+    #[test]
+    fn standard_request_has_empty_environment() {
+        let prev = scrub_somp_level();
+        let mut c = governed_cfg();
+        c.security.level = SecurityLevel::Standard;
+        let req = c.subagent_create_request(1, 512, 600).unwrap();
+        let ok = req["environment"] == serde_json::json!({});
+        restore_somp_level(prev);
+        assert!(ok, "standard environment must be empty {{}}");
+    }
+
+    #[test]
+    fn strict_request_pins_guard_template() {
+        let prev = scrub_somp_level();
+        let mut c = governed_cfg();
+        c.security.level = SecurityLevel::Strict;
+        let req = c.subagent_create_request(1, 512, 600).unwrap();
+        let ok = req["environment"]["guard"]["policy_template"] == serde_json::json!("model-only");
+        restore_somp_level(prev);
+        assert!(ok, "strict environment must pin guard.policy_template");
+    }
+
+    #[test]
+    fn spark_wiring_pins_explicit_policy() {
+        // muse-spark: x-api-key + /zen/go/v1/ cannot ride the template path
+        // (template hardcodes authorization + /v1/), so guard_json must emit
+        // an explicit GuardPolicy with the destination triple agreeing
+        // across model / egress / binding (server validate_model_binding).
+        let prev = scrub_somp_level();
+        let mut c = governed_cfg();
+        c.guard.model_host = Some("opencode.ai".into());
+        c.guard.model_credential_header = "x-api-key".into();
+        c.guard.model_path = "/zen/go/v1/".into();
+        c.security.level = SecurityLevel::Strict;
+        let req = c.subagent_create_request(1, 512, 600).unwrap();
+        let g = &req["environment"]["guard"];
+        let ok = g.get("policy_template").is_none()
+            && g["topology"] == serde_json::json!("inside")
+            && g["policy"]["model"]["host"] == serde_json::json!("opencode.ai")
+            && g["policy"]["model"]["allowed_paths"] == serde_json::json!(["/zen/go/v1/"])
+            && g["policy"]["credentials"][0]["header"] == serde_json::json!("x-api-key")
+            && g["policy"]["credentials"][0]["name"] == g["policy"]["model"]["credential"]
+            && g["policy"]["network"]["egress"][0]["host"] == serde_json::json!("opencode.ai")
+            && g["policy"]["network"]["dns"]["allowed_zones"] == serde_json::json!(["opencode.ai"]);
+        restore_somp_level(prev);
+        assert!(ok, "spark wiring must emit explicit policy with agreeing triple");
+    }
+
+    #[test]
+    fn bad_header_or_path_refuses() {
+        let prev = scrub_somp_level();
+        let mut c = governed_cfg();
+        c.guard.model_credential_header = "x-custom-key".into();
+        assert!(c.guard_json().is_err(), "unknown credential header must refuse");
+        c.guard.model_credential_header = "x-api-key".into();
+        c.guard.model_path = "zen/go/v1/".into();
+        assert!(c.guard_json().is_err(), "relative model path must refuse");
+        restore_somp_level(prev);
     }
 
     #[test]

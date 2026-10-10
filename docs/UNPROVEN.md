@@ -262,3 +262,23 @@
 - Local Postgres: plane healthy, bootstrap key 200, old Neon URL kept in
   `~/aiec/env.systemd.neon-bak-2026-10-10` for rollback. Neon password seen in
   transcript earlier → rotate `neondb_owner` when convenient.
+
+## Strict wiring: template -> explicit policy for spark (2026-10-10, code green, plane unproven)
+- Root cause: `GuardPolicy::template(ModelOnly)` hardcodes
+  `CredentialBinding{header: authorization}` (policy.rs:1068). omp's own wire
+  for `opencode-go` drops `Authorization` and emits `X-Api-Key`
+  (packages/ai/src/providers/anthropic.ts, #6510) — the template path could
+  never authenticate spark even with TAP green.
+- Fix: `guard.model_credential_header` (default `authorization`) +
+  `guard.model_path` (default `/v1/`). Non-default header switches
+  `guard_json` to an explicit `GuardPolicy` (topology inside, version 1,
+  single egress + zone + bound credential, POST-only) satisfying
+  `validate_model_binding` + `validate_dns_egress_consistency`. New tests:
+  `spark_wiring_pins_explicit_policy`, `bad_header_or_path_refuses`. 31/31 green.
+- `somp model preset muse-spark` now pins `opencode.ai:443` + `x-api-key` +
+  `/zen/go/v1/` (guest base `http://<gw>:8443/model/model-main/zen/go/v1`).
+- Keys from OMP: `opencode-go` inline `sk-` (67 chars, no vault-ref) exported
+  out-of-band to NUC `~/aiec/guard-credentials.json` (`{"model-main":…}`,
+  0600) + `AIEC_GUARD_CREDENTIALS_FILE` in `env.systemd`, worker restarted.
+- BLOCKED at link layer: NUC `192.168.1.250` neighbor FAILED (gateway .1 fine,
+  WiFi up). Worker TAP probe + strict dispatch unproven until NUC back.

@@ -426,7 +426,13 @@ fn model_cmd(cfg: config::Config, op: ModelOp) -> Result<()> {
                 "muse-spark" => {
                     config_set(&["guard", "model_host"], serde_yaml::Value::String("opencode.ai".into()))?;
                     config_set(&["guard", "model_port"], serde_yaml::Value::Number(443.into()))?;
-                    println!("guard model endpoint ← muse-spark preset: opencode.ai:443");
+                    // omp wire for opencode-go is X-Api-Key (never bearer:
+                    // providers/anthropic.ts drops Authorization, #6510), and
+                    // the responses API lives under /zen/go/v1, so the guest
+                    // must address .../model/model-main/zen/go/v1 as its base.
+                    config_set(&["guard", "model_credential_header"], serde_yaml::Value::String("x-api-key".into()))?;
+                    config_set(&["guard", "model_path"], serde_yaml::Value::String("/zen/go/v1/".into()))?;
+                    println!("guard model endpoint ← muse-spark preset: opencode.ai:443 (header x-api-key, path /zen/go/v1/)");
                     println!("(catalog baseUrl https://opencode.ai/zen/go/v1, openai-responses API)");
                     Ok(())
                 }
