@@ -55,6 +55,31 @@
   is PERMANENT — retry never converges. Upstream fix: chown-to-worker or
   rootless-removal fallback in `reclaim_workspace`, or classify ownership
   failures non-transient. sOMP already treats destroy-failure as hard error.
+### Local plane TLS+auth fixed 2026-10-10 (`7232430`); plane-side blockers remain
+* sOMP fixes (shipped): `aiec.rs Client::new` ignored `AIEC_TLS_CA_CERT`
+  (always failed TLS verify against self-signed 18443); `main.rs` set the CA
+  fallback only on the TUI path. Fix: PEM load via `Certificate::from_pem` +
+  `add_root_certificate` (never insecure), `ensure_local_ca()` hoisted to top
+  of `main()` for every command. Auth: NUC env bootstrap key (`88b0…`) 401'd
+  — Neon DB digest no longer matched (Oct 9 rotation revoked it); minted a
+  format-valid key (`af_live_`+48 hex, `validate_api_key` rejects anything
+  else) and INSERTed its SHA256 digest as Admin for the plane tenant
+  (`01a12651-c5aa-…`). Proven: `session show` + `/v1/keys` 200, no manual env.
+* Plane-side (NOT sOMP, needs NUC operator action): strict+firecracker create
+  → 503 `scheduler_unavailable` (all 3 workers alive on NUC, heartbeats stale
+  or capacity pinned); standard+docker create → 400
+  `guard_runtime_unavailable` (Guard env in request needs microVM; plane
+  requires `AIEC_ALLOW_REDUCED_ISOLATION=1` to accept docker downgrade);
+  two stale docker sandboxes (`01a12388`, `01a1236f`) un-destroyable (503 on
+  DELETE = the reclaim ownership bug above). Default image stays `somp-guest`
+  (UNBUILT); `alpine:3.21` is the plane-known reference (content-id
+  `afimg1_b3fe…` must NOT be sent as the image string — `resolve()` expects
+  the reference). Live governed dispatch 200 UNPROVEN until plane recovers.
+### AIec upstream checked 2026-10-10: 4 new commits, none plane-side
+* `0f516df..ebc41ac` (Oct 9): `a1f2274` (already ported), `a00cda6` operator
+  context + steering hardening, `ed103bb` env bindings restore, `ebc41ac`
+  same-turn steering — all `harness/`-scoped. No storage/runtime/api change:
+  no upstream fix for destroy-reclaim or scheduler capacity. Nothing to port.
 
 
 ## AIec-box proof 2026-10-10 (public repo, docker worker)
