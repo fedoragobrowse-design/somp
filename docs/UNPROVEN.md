@@ -47,9 +47,10 @@
 
 ## Approved 2026-10-10 (user): NUC + model key + latest AIec + JEV gate
 
-- NUC `gobrowse@192.168.1.250` APPROVED for builds: `fedora-comp`,
-  `/dev/kvm` present, `vmlinux` 43M at `~/aiec/images/vmlinux`, podman 5.8.4.
-  Guest-image build + Firecracker E2E now unblocked (next: run builder there).
+- NUC build host APPROVED for builds (user 2026-10-10): KVM present, guest
+  kernel present, container runtime available. Guest-image build +
+  Firecracker E2E unblocked (next: run builder there). Host identity, paths,
+  and versions kept out of this public file — see operator runbook.
 - AIec pinned to latest `ebc41ac` (was `0f516df`): +449/-20 across 10 files.
   Reviewed `a1f2274` (exfil-chain fix, ported to `secrets.rs`) + `a00cda6`
   (operator-context hardening) + steering same-turn fix. No API-shape drift
