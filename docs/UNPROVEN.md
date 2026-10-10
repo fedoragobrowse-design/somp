@@ -193,3 +193,46 @@
 - bench `srt_true_host` note records the invoking binary + settings path.
 - build manifest lists the true overlay (bootstrap + srt/node/bun + dist);
   bwrap/socat/rg come from the AIec base image, probed at boot (fail-closed).
+
+## Local-DB migration + Guard placement root cause (2026-10-10, operator-approved)
+
+- Neon dead (host-side TCP RST on 5432/6543, NUC egress 80/443-only) → moved
+  plane to NUC-local Postgres: `podman run postgres:16` (cached image; Docker
+  Hub pull blocked by stale Synology MITM cert), loopback-only 5432,
+  password in `~/.config/aiec/pgpass-local` (NUC-side only, never in chat).
+  Old Neon `DATABASE_URL` kept in `~/aiec/env.systemd.neon-bak-2026-10-10`.
+- Fresh DB → old keys 401 (correct); NUC env bootstrap key now live (200).
+  `somp session show` healthy again (`no session` = correct empty state).
+- Governed dispatch 503 root-caused to PLACEMENT FILTER, not capacity:
+  all 3 workers healthy/accepting with free vCPU, but guarded requests
+  demand `network_policy:true` (`create_sandbox` lib.rs: guarded → required),
+  and the NUC firecracker worker advertises `false`.
+- Capability chain: `FirecrackerRuntime::capabilities()` asks its network
+  backend; `GuardNetworkManager` reports `can_enforce = probe_enforcement()`
+  = `nft list ruleset` success. Worker runs as unprivileged user unit →
+  `Operation not permitted`. Operator granted nft caps (keep scoped per
+  review: prefer system unit `AmbientCapabilities=CAP_NET_ADMIN` over
+  global `/usr/bin/nft` setcap; nft upgrades strip file caps — runbook item).
+- Twist: deployed `~/aiec/bin/aiec` (2026-10-08) contains NO
+  `probe_enforcement`/`can_enforce` strings — predates the Guard probe, so
+  its fc backend reports `network_policy:false` unconditionally. Rebuilding
+  worker from `~/aiec-build` (has Guard wiring) via
+  `cargo build --release -p aiec-cli`; then swap binary + restart worker +
+  re-probe caps + prove `somp dispatch`. PENDING build (bg_64).
+
+## Worker binary rebuild + TUN gap (2026-10-10, pending operator setcap)
+
+- Deployed `~/aiec/bin/aiec` predated Guard probe (`probe_enforcement` absent
+  from strings) → rebuilt from `~/aiec-build` (`cargo build --release -p
+  aiec-cli`, backup `~/aiec/bin/aiec.pre-guard-2026-10-10`). Swap needed full
+  `systemctl --user stop` + `pkill -x aiec` first (Text file busy otherwise);
+  inode changed 3031636 size 35384448 → 35287336. Old binary kept for rollback.
+- New binary + operator nft caps → fc worker now advertises
+  `network_policy:true` (probed live). Governed placement 503 SOLVED.
+- Next failure one layer deeper: `backend_unavailable: ip failed:
+  ioctl(TUNSETIFF): Operation not permitted` — worker process itself needs
+  CAP_NET_ADMIN for tap devices (`/dev/net/tun` perms fine 666). `setcap`
+  as unprivileged user fails (`Operation not permitted`); needs one root
+  line: `sudo setcap cap_net_admin+ep ~/aiec/bin/aiec`, then the global
+  `/usr/bin/nft` cap can come off (worker children inherit). Binary swaps
+  need re-cap (runbook).
