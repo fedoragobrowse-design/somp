@@ -12,14 +12,16 @@
 set -eu
 
 PREFIX="${HOME}/.local"
-for a in "$@"; do
-  case "$a" in
-    --prefix=*) PREFIX="${a#--prefix=}";;
-    --prefix) shift; PREFIX="$1";;
+# while-loop (not `for a in "$@"` + shift): the old form double-shifted
+# `--prefix DIR` and rejected DIR as an unknown arg — only `--prefix=DIR`
+# worked.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix=*) PREFIX="${1#--prefix=}"; shift;;
+    --prefix) shift; PREFIX="${1:?--prefix needs DIR}"; shift;;
     -h|--help) echo "Usage: ./install.sh [--prefix DIR]"; exit 0;;
-    *) echo "unknown arg: $a" >&2; exit 1;;
+    *) echo "unknown arg: $1" >&2; exit 1;;
   esac
-  shift || true
 done
 
 REPO="$(cd "$(dirname "$0")" && pwd)"

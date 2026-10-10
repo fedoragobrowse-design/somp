@@ -78,25 +78,27 @@ export default function sompExt(pi: ExtensionAPI) {
 		if (ctx.hasUI) ctx.ui.notify(msg);
 		else process.stderr.write(`\n${msg}\n`);
 	});
-	// Governed resume in persisted history: omp's exit/fork hints print
-	// `omp --resume <id>`, which pasted verbatim reloads UNgoverned. Rewrite
-	// text blocks so history/persistence carry `somp-omp --resume <id>`.
-	// NOTE: text already streamed via message_update is NOT retracted (live
-	// flash of the original is possible); history is the source of truth.
-	if (governed) {
-		pi.on("assistant_message", async event => {
-			const content = event.message.content;
-			let changed = false;
-			const next = content.map(block => {
-				if (block.type !== "text" || typeof block.text !== "string") return block;
-				if (!block.text.includes("omp --resume")) return block;
-				changed = true;
-				return { ...block, text: block.text.replaceAll("omp --resume", "somp-omp --resume") };
-			});
-			if (!changed) return undefined;
-			return { content: next };
+// Rewrite the exact hint lines omp emits (`omp [--profile P] --resume <id>`,
+// resume-command.ts) so history/persistence carry the governed form.
+// Idempotent: negative lookbehind skips already-rewritten `somp-omp` lines.
+// The id must be UUID-ish (real hint lines carry one) so prose/docs
+// mentioning `omp --resume` without an id are left alone.
+const RESUME_HINT_RE = /(?<!somp-)omp (--profile \S+ )?--resume ([0-9a-fA-F]{8}-[0-9a-fA-F-]{6,})/g;
+if (governed) {
+	pi.on("assistant_message", async event => {
+		const content = event.message.content;
+		let changed = false;
+		const next = content.map(block => {
+			if (block.type !== "text" || typeof block.text !== "string") return block;
+			if (!RESUME_HINT_RE.test(block.text)) return block;
+			RESUME_HINT_RE.lastIndex = 0;
+			changed = true;
+			return { ...block, text: block.text.replace(RESUME_HINT_RE, "somp-omp $1--resume $2") };
 		});
-	}
+		if (!changed) return undefined;
+		return { content: next };
+	});
+}
 	// --- 1. Governed mode: block local task spawns, offer somp_task ---
 	if (governed) {
 		pi.on("tool_call", async event => {
