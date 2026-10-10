@@ -309,3 +309,17 @@
 - Staged at `~/guard-fc-images/somp/{somp-guest.ext4,somp-guest.sha256,vmlinux}`.
   Registration on the NUC worker (`~/aiec/images/`) waits for the link.
 - Honest gap: guest never booted — first boot is the NUC prove-out.
+
+## Strict dispatch prove-out blocked on NUC power/link (2026-10-10 ~11:25 UTC)
+- 3x ping sweep all 100% loss, neighbor FAILED. Everything strict needs —
+  worker TAP probe, image registration, guarded dispatch — is staged and
+  waits for the NUC to return. No code changes outstanding for strict.
+- Ready checklist when the link returns:
+  1. `ssh gobrowse@192.168.1.250` + `systemctl --user is-active aiec-worker`
+     (credential file + restart already applied pre-outage).
+  2. Copy `~/guard-fc-images/somp/somp-guest.ext4` + `vmlinux` to NUC,
+     register in `~/aiec/images/` per worker image config.
+  3. `SOMP_LEVEL=strict somp dispatch --task-file /tmp/proof-task.md
+     --command echo --command PROOF-RAN` with `image: somp-guest`.
+  4. Expect guest env `AIEC_MODEL_BASE_URL=http://<gw>:8443/model/model-main/zen/go/v1`
+     + `AIEC_MODEL_API_KEY=placeholder://model-main`.
