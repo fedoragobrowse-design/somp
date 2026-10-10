@@ -282,3 +282,18 @@
   0600) + `AIEC_GUARD_CREDENTIALS_FILE` in `env.systemd`, worker restarted.
 - BLOCKED at link layer: NUC `192.168.1.250` neighbor FAILED (gateway .1 fine,
   WiFi up). Worker TAP probe + strict dispatch unproven until NUC back.
+
+## NUC dark at link layer (2026-10-10 ~11:15 UTC)
+- `192.168.1.250 dev wlp0s20f3 FAILED`; gateway `.1` pings fine, WiFi
+  `pineapple_home_network` up — NUC itself down/asleep, not a local fault.
+  Plane proofs (TAP probe, strict dispatch) blocked until it returns.
+- Local TAP ceiling confirmed same as NUC: `ip tuntap add` ->
+  `ioctl(TUNSETIFF): Operation not permitted` unprivileged; `sudo -n`
+  needs interactive auth. The system-unit fix stands as specified.
+- Explicit spark policy shape validated offline 8/8 (triple agreement,
+  zone coverage, POST-only, absolute paths, allowlisted header, no secret
+  bytes in request). Test matrix 31/31 under SOMP_LEVEL unset/standard/
+  strict/off.
+- Guest build prerequisites present (builder script, srt dist, mke2fs,
+  node/bun/bwrap/socat/rg) except `AIEC_KERNEL` + out-dir; build runs when
+  the NUC (KVM host) is back — loop-mount needs root there.
