@@ -37,10 +37,19 @@ pub struct Client {
 
 impl Client {
     pub fn new(base_url: String, api_key: String) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .context("build http client")?;
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none());
+        // Local plane uses a self-signed CA: trust it via AIEC_TLS_CA_CERT
+        // (PEM file path). Never danger_accept_invalid_certs — fail closed
+        // if the CA file is missing/unreadable and the URL is https.
+        if let Ok(ca_path) = std::env::var("AIEC_TLS_CA_CERT") {
+            let pem = std::fs::read(&ca_path)
+                .with_context(|| format!("read AIEC_TLS_CA_CERT {ca_path}"))?;
+            let cert = reqwest::Certificate::from_pem(&pem)
+                .context("parse AIEC_TLS_CA_CERT PEM")?;
+            builder = builder.add_root_certificate(cert);
+        }
+        let http = builder.build().context("build http client")?;
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_owned(),

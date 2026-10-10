@@ -150,6 +150,11 @@ enum PolicyOp {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Local plane CA for EVERY command (not just TUI): the 18443 plane
+    // uses a self-signed CA at ~/.config/aiec/ca.pem. aiec.rs loads
+    // AIEC_TLS_CA_CERT; without this hoist, dispatch/session/policy/bench
+    // fail TLS verify unless the caller exports the var manually.
+    ensure_local_ca();
     let cli = Cli::parse();
     // Bare `somp` (no subcommand) opens the governed TUI — this is the
     // primary operator entry point. `somp <extra...>` passes through.
@@ -186,14 +191,9 @@ fn launch_governed_tui(extra: Vec<String>) -> Result<()> {
         bail!("cannot launch governed TUI: {} missing", ext.display());
     }
     let somp_bin = std::env::current_exe().context("current exe")?;
-    // Local plane CA: same fallback the wrapper uses (self-signed 18443).
-    if std::env::var("AIEC_TLS_CA_CERT").is_err() {
-        let ca = dirs_home_ca();
-        if ca.exists() {
-            // SAFETY: single-threaded pre-exec setup; no other thread exists yet.
-            unsafe { std::env::set_var("AIEC_TLS_CA_CERT", &ca) };
-        }
-    }
+    // CA already ensured in main(); keep the call as belt-and-braces
+    // for direct reuse (harmless: ensure_local_ca is idempotent).
+    ensure_local_ca();
     // SAFETY: single-threaded pre-exec setup.
     unsafe {
         std::env::set_var("SOMP_GOVERNED", "1");
@@ -206,6 +206,17 @@ fn launch_governed_tui(extra: Vec<String>) -> Result<()> {
         .exec();
     // exec only returns on failure.
     Err(anyhow::anyhow!("exec omp failed: {err} (is omp on PATH?)"))
+}
+/// Trust the local plane's self-signed CA unless the operator overrode
+/// AIEC_TLS_CA_CERT explicitly. Idempotent; safe to call from main and TUI.
+fn ensure_local_ca() {
+    if std::env::var("AIEC_TLS_CA_CERT").is_err() {
+        let ca = dirs_home_ca();
+        if ca.exists() {
+            // SAFETY: single-threaded startup; no other thread exists yet.
+            unsafe { std::env::set_var("AIEC_TLS_CA_CERT", &ca) };
+        }
+    }
 }
 
 fn dirs_home_ca() -> std::path::PathBuf {
