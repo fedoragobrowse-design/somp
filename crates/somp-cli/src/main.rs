@@ -139,6 +139,12 @@ fn update_cmd(check: bool) -> Result<()> {
     ).unwrap_or_default().trim().to_string();
     println!("somp repo: {}", repo.display());
     println!("origin:    {}", if remote.is_empty() { "(unset)" } else { &remote });
+    // Fail-closed origin check: an origin pointing at upstream omp
+    // (can1357/oh-my-pi) or any non-somp repo would pull FOREIGN code and
+    // rebuild the governed binary from it. Refuse outright.
+    if remote_contains_upstream(&remote) {
+        bail!("refusing update: origin {remote:?} looks like upstream omp or a non-somp repo — `somp update` only pulls from YOUR somp repo ({FALLBACK_REPO})");
+    }
     if !remote.is_empty() && remote != FALLBACK_REPO {
         println!("note: origin is not {FALLBACK_REPO} — pulling from YOUR configured origin, not upstream omp.");
     }
@@ -183,6 +189,17 @@ fn git_rev(repo: &std::path::Path, rev: &str) -> Result<String> {
     Ok(String::from_utf8(out.stdout).unwrap_or_default().trim().to_string())
 }
 
+/// True when the origin URL must NOT be trusted for `somp update`.
+/// Matches upstream omp (oh-my-pi / oh_my_pi, any owner) and anything that
+/// does not look like a somp repo URL. Case-insensitive; matches both
+/// https and ssh remote forms.
+fn remote_contains_upstream(remote: &str) -> bool {
+    let r = remote.to_lowercase();
+    if r.is_empty() {
+        return false; // unset origin fails later at fetch, with git's own error
+    }
+    !r.contains("somp") || r.contains("oh-my-pi") || r.contains("oh_my_pi")
+}
 fn level_cmd(cfg: config::Config, level: Option<String>) -> Result<()> {
     match level {
         None => {
@@ -347,5 +364,29 @@ async fn policy(cfg: config::Config, op: PolicyOp) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&p)?);
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn upstream_origin_refused() {
+        assert!(remote_contains_upstream("https://github.com/can1357/oh-my-pi.git"));
+        assert!(remote_contains_upstream("git@github.com:someone/oh-my-pi.git"));
+        assert!(remote_contains_upstream("https://github.com/other/oh_my_pi.git"));
+    }
+
+    #[test]
+    fn non_somp_origin_refused() {
+        assert!(remote_contains_upstream("https://github.com/someone/random-tool.git"));
+    }
+
+    #[test]
+    fn own_repo_allowed() {
+        assert!(!remote_contains_upstream("https://github.com/fedoragobrowse-design/somp.git"));
+        assert!(!remote_contains_upstream("git@github.com:fedoragobrowse-design/somp.git"));
+        assert!(!remote_contains_upstream(""));
     }
 }
