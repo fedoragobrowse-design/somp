@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelog — sOMP</title>
+<meta name="description" content="sOMP release history, from the repo commit log.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="index.html" aria-label="sOMP home">
+    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="3" width="26" height="26" rx="5" fill="none" stroke="#8b95a1" stroke-width="2"/><rect x="13" y="8" width="6" height="12" rx="2" fill="#e8a33d"/><circle cx="16" cy="25" r="2" fill="#3ddc84"/></svg>
+    <span>sOMP</span>
+  </a>
+  <nav aria-label="Primary">
+    <a href="index.html#mechanism">Mechanism</a>
+    <a href="index.html#install">Install</a>
+    <a href="index.html#levels">Levels</a>
+    <a href="docs.html">Docs</a>
+    <a href="changelog.html">Changelog</a>
+    <a class="repo" href="https://github.com/fedoragobrowse-design/somp">GitHub</a>
+  </nav>
+</header>
+<main id="main">
+<div class="page-head">
+  <h1>Changelog</h1>
+  <p>From the repo commit log (<code class="mono">git log --oneline</code>). One line per change, newest first.</p>
+</div>
+<div class="doc-grid">
+  <div></div>
+  <div class="doc-body">
+    <article class="release"><h2>Self-sufficient installer + Claude subscription path</h2><time>2026-10-09 · 83cbb95</time>
+      <ul><li>Installer bootstraps <code class="mono">omp</code> from <code class="mono">omp.sh/install</code> if missing; auth presence check (stored credential blocks)</li>
+      <li>Proven live: <code class="mono">--model opencode-go/muse-spark-1.3-contributor</code> through the wrapper; <code class="mono">omp update --check</code> clean</li>
+      <li>Skills/MCP stance documented: allow-list, nothing auto-enabled</li></ul></article>
+    <article class="release"><h2>Root README + rewrite/idempotency fixes</h2><time>2026-10-09 · 51e95d4</time>
+      <ul><li>Repo-root README with one-liner, usage table, levels, update story</li>
+      <li>Resume-hint rewrite idempotent (UUID-shaped ids only) + <code class="mono">install.sh --prefix DIR</code> fix</li></ul></article>
+    <article class="release"><h2>Bare TUI + exact update gate + level runtimes</h2><time>2026-10-09 · 8473a1f</time>
+      <ul><li>Bare <code class="mono">somp</code> opens the governed TUI; <code class="mono">somp tui -- &lt;args&gt;</code> passthrough</li>
+      <li>Exact-match update origin gate; level→runtime mapping (strict=firecracker, standard=docker)</li>
+      <li>Print-mode <code class="mono">/somp-status</code> + <code class="mono">/somp-level</code> via stdout fallback</li></ul></article>
+    <article class="release"><h2>Update refuses foreign origins</h2><time>2026-10-09 · 47365e5</time>
+      <ul><li><code class="mono">somp update</code> refuses upstream / non-somp origins fail-closed, unit-tested + proven live</li></ul></article>
+    <article class="release"><h2>Operator-repo updates</h2><time>2026-10-09 · a7dd6fd</time>
+      <ul><li><code class="mono">somp update</code> pulls from the operator repo, never upstream omp/npm</li></ul></article>
+    <article class="release"><h2>Governed resume reminder</h2><time>2026-10-09 · 46e451c</time>
+      <ul><li>Shutdown reminder: <code class="mono">somp-omp --resume</code>, not <code class="mono">omp --resume</code></li></ul></article>
+    <article class="release"><h2>Security levels + TUI badge</h2><time>2026-10-09 · dd51280</time>
+      <ul><li><code class="mono">strict|standard|off</code> setting, status-bar badge, <code class="mono">somp level</code> CLI, OFF fail-closed gates</li></ul></article>
+    <article class="release"><h2>Non-interfering installer</h2><time>2026-10-09 · cb693d8</time>
+      <ul><li>No ambient extension link; opt-in <code class="mono">somp-omp</code> wrapper; plain <code class="mono">omp</code> provably untouched</li></ul></article>
+    <article class="release"><h2>Bug-hunt batches</h2><time>2026-10-09 · c361c67 · 19f7a2f</time>
+      <ul><li>Diff scrub at print boundary, file-spec split fix, port-0 reject, kvm-open probe, ext unlink</li></ul></article>
+    <article class="release"><h2>AIec-box proof + findings</h2><time>2026-10-09 · 988454b</time>
+      <ul><li>In-box logic-equivalence proof; worker TLS/destroy defects recorded</li></ul></article>
+    <article class="release"><h2>Public hygiene + scaffold</h2><time>2026-10-09 · 876870c · 36c237e</time>
+      <ul><li>NUC identity redacted; governed omp-on-AIec scaffold (secrets deny+scrub, JEV design, guest+srt, bench)</li></ul></article>
+  </div>
+</div>
+</main>
+<footer>
+  <span>sOMP — Secure omp. Fail closed, never silent.</span>
+  <span class="mono">somp.gobrowse.dev</span>
+</footer>
+</body>
+</html>

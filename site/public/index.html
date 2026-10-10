@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sOMP — Secure omp. Subagents leave the machine; yours stays yours.</title>
+<meta name="description" content="sOMP wraps omp so every subagent runs in a disposable AIec microVM — srt-wrapped, Guard-egress-controlled. Plain omp untouched.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='4' width='24' height='24' rx='4' fill='%23111418'/%3E%3Crect x='13' y='8' width='6' height='14' rx='2' fill='%23e8a33d'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="index.html" aria-label="sOMP home">
+    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="3" width="26" height="26" rx="5" fill="none" stroke="#8b95a1" stroke-width="2"/><rect x="13" y="8" width="6" height="12" rx="2" fill="#e8a33d"/><circle cx="16" cy="25" r="2" fill="#3ddc84"/></svg>
+    <span>sOMP</span>
+  </a>
+  <nav aria-label="Primary">
+    <a href="#mechanism">Mechanism</a>
+    <a href="#install">Install</a>
+    <a href="#levels">Levels</a>
+    <a href="docs.html">Docs</a>
+    <a href="changelog.html">Changelog</a>
+    <a class="repo" href="https://github.com/fedoragobrowse-design/somp">GitHub</a>
+  </nav>
+</header>
+
+<main id="main">
+<!-- ══ FIRST VIEWPORT: panel thesis ══ -->
+<section class="hero">
+  <div class="hero-copy">
+    <h1>Your subagents leave the machine. Yours stays yours.</h1>
+    <p class="sub">sOMP wraps <span class="mono">omp</span> so every subagent the model spawns runs in a <strong>disposable AIec microVM</strong> — srt-wrapped, Guard-egress-controlled — then returns a git diff and is destroyed. Your session, skills, and MCP servers stay exactly as upstream ships them.</p>
+    <div class="cmdbox" role="group" aria-label="Install command">
+      <code id="install-cmd">git clone https://github.com/fedoragobrowse-design/somp.git ~/code/somp &amp;&amp; ~/code/somp/install.sh</code>
+      <button id="copy-btn" type="button" aria-live="polite">copy</button>
+    </div>
+    <p class="cmdnote">One line. Idempotent. Never touches your omp setup.</p>
+    <div class="hero-actions">
+      <a class="btn solid" href="#install">Install sOMP</a>
+      <a class="btn ghost" href="docs.html">Read the docs</a>
+    </div>
+  </div>
+
+  <div class="panel" role="group" aria-label="Protection relay panel (demonstration)">
+    <div class="panel-head">
+      <span class="panel-title">SANDBOX PROTECTION</span>
+      <span class="panel-model mono">SOMP · REV A</span>
+    </div>
+    <div class="breakers" role="radiogroup" aria-label="Protection level">
+      <button class="breaker on" role="radio" aria-checked="true" data-level="strict">
+        <span class="slot"><span class="lever"></span></span>
+        <span class="blabel">STRICT</span>
+      </button>
+      <button class="breaker" role="radio" aria-checked="false" data-level="standard">
+        <span class="slot"><span class="lever"></span></span>
+        <span class="blabel">STANDARD</span>
+      </button>
+      <button class="breaker" role="radio" aria-checked="false" data-level="off">
+        <span class="slot"><span class="lever"></span></span>
+        <span class="blabel">OFF</span>
+      </button>
+    </div>
+    <div class="lamps" aria-hidden="true">
+      <span class="lamp" data-lamp="vm"><i></i>µVM</span>
+      <span class="lamp" data-lamp="guard"><i></i>GUARD</span>
+      <span class="lamp" data-lamp="srt"><i></i>SRT</span>
+    </div>
+    <pre class="readout mono" id="readout" aria-live="polite">level strict · runtime firecracker
+dispatched work: GOVERNED
+placement refused without KVM — fail closed</pre>
+  </div>
+</section>
+
+<!-- ══ MECHANISM: wiring diagram ══ -->
+<section class="section" id="mechanism">
+  <h2>The relay, wired</h2>
+  <p class="lede">You talk to omp. The model spawns subagents. The extension throws a breaker: local spawn blocked, work re-dispatched into a box that cannot reach your host.</p>
+  <svg class="wiring" viewBox="0 0 760 300" role="img" aria-label="Wiring diagram: operator to somp TUI to blocked task tool to somp_task to AIec microVM with srt and Guard, returning a git diff">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b95a1"/></marker>
+    </defs>
+    <g font-family="ui-monospace,monospace" font-size="12">
+      <rect x="8" y="110" width="120" height="80" rx="8" fill="#161b22" stroke="#2a3340"/>
+      <text x="68" y="138" text-anchor="middle" fill="#e6ebf1">you</text>
+      <text x="68" y="158" text-anchor="middle" fill="#8b95a1">terminal</text>
+      <rect x="168" y="60" width="180" height="180" rx="8" fill="#161b22" stroke="#e8a33d" stroke-width="1.5"/>
+      <text x="258" y="88" text-anchor="middle" fill="#e8a33d">somp (governed TUI)</text>
+      <text x="258" y="110" text-anchor="middle" fill="#e6ebf1">omp + 1 extension</text>
+      <text x="258" y="130" text-anchor="middle" fill="#e6ebf1">skills · MCP intact</text>
+      <rect x="188" y="150" width="140" height="34" rx="4" fill="none" stroke="#f85149" stroke-dasharray="5 4"/>
+      <text x="258" y="172" text-anchor="middle" fill="#f85149">task → BLOCKED ⏚</text>
+      <text x="258" y="212" text-anchor="middle" fill="#3ddc84">somp_task → dispatch</text>
+      <rect x="388" y="60" width="200" height="180" rx="8" fill="#161b22" stroke="#2a3340"/>
+      <text x="488" y="88" text-anchor="middle" fill="#e6ebf1">disposable microVM</text>
+      <text x="488" y="110" text-anchor="middle" fill="#8b95a1">srt wrap · files+task in</text>
+      <text x="488" y="130" text-anchor="middle" fill="#8b95a1">Guard: model-endpoint only</text>
+      <text x="488" y="150" text-anchor="middle" fill="#8b95a1">no keys in guest</text>
+      <text x="488" y="178" text-anchor="middle" fill="#3ddc84">git diff out → destroy</text>
+      <rect x="624" y="110" width="128" height="80" rx="8" fill="#161b22" stroke="#2a3340"/>
+      <text x="688" y="138" text-anchor="middle" fill="#e6ebf1">model</text>
+      <text x="688" y="158" text-anchor="middle" fill="#8b95a1">endpoint</text>
+      <line x1="128" y1="150" x2="166" y2="150" stroke="#8b95a1" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="348" y1="195" x2="386" y2="195" stroke="#3ddc84" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="588" y1="130" x2="622" y2="140" stroke="#8b95a1" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="488" y1="240" x2="488" y2="272" stroke="#2a3340" stroke-dasharray="4 4"/>
+      <line x1="258" y1="240" x2="488" y2="272" stroke="#2a3340" stroke-dasharray="4 4"/>
+      <text x="488" y="292" text-anchor="middle" fill="#8b95a1">diff lands in your session; the box is gone</text>
+    </g>
+  </svg>
+  <ol class="steps">
+    <li><strong>Model calls <span class="mono">task</span>.</strong> The extension blocks local spawn — no subprocess, no host filesystem.</li>
+    <li><strong><span class="mono">somp_task</span> dispatches.</strong> Files + task text staged into a fresh AIec box; secrets scrubbed at the print boundary.</li>
+    <li><strong>Work runs wrapped.</strong> srt confines filesystem/network inside the guest; Guard brokers model-only egress outside it.</li>
+    <li><strong>Diff returns, box destroyed.</strong> Server-side <span class="mono">git diff</span> collected; destroy runs even on task failure.</li>
+  </ol>
+</section>
+
+<!-- ══ INSTALL ══ -->
+<section class="section" id="install">
+  <h2>Install</h2>
+  <div class="install-grid">
+    <ol class="procedure">
+      <li><p><strong>Paste the line.</strong> Clones the operator repo, builds the CLI, links <span class="mono">somp</span> + <span class="mono">somp-omp</span>, seeds config, verifies.</p></li>
+      <li><p><strong>Point at your plane.</strong> Edit <span class="mono">~/.config/somp/config.yaml</span>: <span class="mono">aiec.base_url</span>, key file, and <span class="mono">guard.model_host</span> (no default — inventing one would aim boxes at the wrong provider).</p></li>
+      <li><p><strong>Run <span class="mono">somp</span>.</strong> Governed TUI, your normal omp. Check the status bar: <span class="mono">sandbox 🛡️ STRICT</span>.</p></li>
+    </ol>
+    <aside class="assure">
+      <h3>What it never does</h3>
+      <ul>
+        <li>No changes to <span class="mono">~/.omp</span>, skills, or MCP servers</li>
+        <li>No shell-rc edits, no ambient extension links</li>
+        <li>Plain <span class="mono">omp</span> runs exactly as before</li>
+        <li>Missing <span class="mono">omp</span>? The installer fetches it from <span class="mono">omp.sh/install</span>, then stops — login stays yours</li>
+      </ul>
+    </aside>
+  </div>
+</section>
+
+<!-- ══ LEVELS ══ -->
+<section class="section" id="levels">
+  <h2>Three positions. One open breaker refuses.</h2>
+  <div class="levels">
+    <article class="level strict">
+      <h3>STRICT <span class="tag">default</span></h3>
+      <p>Firecracker microVM + Guard model-only egress + srt. Demands KVM; refuses governed work without it.</p>
+      <code class="mono">somp level strict</code>
+    </article>
+    <article class="level standard">
+      <h3>STANDARD</h3>
+      <p>Docker worker + Guard + srt. Development only — there is no microVM boundary here, and the page says so.</p>
+      <code class="mono">somp level standard</code>
+    </article>
+    <article class="level off">
+      <h3>OFF</h3>
+      <p>No sandboxing. <span class="mono">dispatch</span> and <span class="mono">session up</span> refuse fail-closed until you re-engage.</p>
+      <code class="mono">somp level off</code>
+    </article>
+  </div>
+  <p class="envnote"><span class="mono">SOMP_LEVEL</span> in the environment wins over config — and says so when it does.</p>
+</section>
+
+<!-- ══ HONESTY ══ -->
+<section class="section honesty">
+  <h2>Honest limits</h2>
+  <p class="lede">Numbers below are measured on the host or single-sampled — proxies, not guest evidence. The repo keeps <span class="mono">docs/UNPROVEN.md</span> as a standing list; this page will not claim what it hasn't measured.</p>
+  <table class="facts">
+    <thead><tr><th>Claim</th><th>Status</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr><td>srt wrap median ≈ 330&nbsp;ms</td><td>measured · host proxy</td><td class="mono">somp bench, 16 samples, 0 failures</td></tr>
+      <tr><td>Warm subagent start &lt; 1&nbsp;s</td><td class="mono">unproven</td><td>needs Firecracker E2E</td></tr>
+      <tr><td>Per-subagent RSS small</td><td class="mono">unproven</td><td>needs Firecracker E2E</td></tr>
+      <tr><td>JEV bash gate live</td><td class="mono">not implemented</td><td>policy pure-function only, 15/15 unit tests</td></tr>
+      <tr><td>Fail-closed on unenforceable</td><td>proven live</td><td class="mono">OFF refusal before any VM created</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ══ FAQ ══ -->
+<section class="section" id="faq">
+  <h2>Asked, answered</h2>
+  <dl class="faq">
+    <div><dt>Does updating omp break sOMP?</dt><dd>No. The wrapper execs <span class="mono">omp</span> from PATH with an explicit <span class="mono">-e</span> flag — upstream changes flow through. If a future omp ever breaks the extension seam, the installer's <span class="mono">bun build</span> check fails loudly instead of running ungoverned.</dd></div>
+    <div><dt>Where do my skills and MCP servers go?</dt><dd>Nowhere — they stay. <span class="mono">somp-omp</span> <em>is</em> omp plus one extension flag. Guests receive staged files + task text only; MCP credentials are never forwarded into VMs.</dd></div>
+    <div><dt>What does <span class="mono">somp update</span> pull?</dt><dd>Only <span class="mono">fedoragobrowse-design/somp</span>, exact-origin match. Upstream omp, npm, and lookalike origins are refused. <span class="mono">omp update</span> stays upstream's business.</dd></div>
+    <div><dt>Resume a governed session how?</dt><dd><span class="mono">somp-omp --resume &lt;id&gt;</span> — plain <span class="mono">omp --resume</span> reloads ungoverned. The extension rewrites the hint in history and reminds on shutdown.</dd></div>
+    <div><dt>Which keys can leak?</dt><dd>None by design: guests get proxy posture, never real keys. The CLI scrubs <span class="mono">OPENAI / OPENROUTER / ANTHROPIC_API_KEY</span> and <span class="mono">TYPESAFE_API_KEY</span> from diffs and exec output.</dd></div>
+  </dl>
+</section>
+
+<section class="close">
+  <h2>Throw the breaker.</h2>
+  <p>One line, reversible, your omp untouched.</p>
+  <div class="cmdbox" role="group" aria-label="Install command">
+    <code>git clone https://github.com/fedoragobrowse-design/somp.git ~/code/somp &amp;&amp; ~/code/somp/install.sh</code>
+    <button type="button" data-copy>copy</button>
+  </div>
+  <p class="repo-link"><a href="https://github.com/fedoragobrowse-design/somp">Source, docs, and UNPROVEN.md on GitHub →</a></p>
+</section>
+</main>
+
+<footer>
+  <span>sOMP — Secure omp. Fail closed, never silent.</span>
+  <span class="mono">somp.gobrowse.dev</span>
+</footer>
+<script src="panel.js" defer></script>
+</body>
+</html>

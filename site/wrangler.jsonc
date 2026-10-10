@@ -1,0 +1,10 @@
+{
+  "$schema": "https://developers.cloudflare.com/workers/wrangler/configuration-schema.json",
+  "name": "somp-site",
+  "compatibility_date": "2026-10-10",
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "somp.gobrowse.dev", "custom_domain": true }]
+}

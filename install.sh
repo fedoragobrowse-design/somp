@@ -39,6 +39,32 @@ if ! command -v omp >/dev/null 2>&1; then
 else
   echo "== omp present: $(command -v omp) ($(omp --version 2>/dev/null | head -1)) =="
 fi
+echo "== AIec =="
+# Present (CLI on PATH, or the cached checkout this repo pins) → skip, loudly.
+# Missing → clone the operator repo (AIec/AIec, NOT upstream), shallow, and
+# build the three binaries self-hosting needs (aiec-api, aiec-cli, aiec-mcp).
+# Full self-hosting (KVM+Postgres+S3+guest image) stays manual:
+# https://github.com/fedoragobrowse-design/AIec#self-hosting
+if command -v aiec >/dev/null 2>&1 || [ -x "${HOME}/.cache/somp/repos/aiec/target/release/aiec" ]; then
+  echo "AIec present — skipping install (found: $(command -v aiec 2>/dev/null || echo "${HOME}/.cache/somp/repos/aiec/target/release/aiec"))"
+else
+  echo "AIec not found — cloning + building (this takes a few minutes)…"
+  need git
+  mkdir -p "${HOME}/.cache/somp/repos"
+  if [ ! -d "${HOME}/.cache/somp/repos/aiec/.git" ]; then
+    git clone --depth 1 https://github.com/fedoragobrowse-design/AIec.git "${HOME}/.cache/somp/repos/aiec"
+  fi
+  (cd "${HOME}/.cache/somp/repos/aiec" && cargo build --release -p aiec-api -p aiec-cli -p aiec-mcp)
+  mkdir -p "${BIN}"
+  for b in aiec aiec-mcp; do
+    if [ -x "${HOME}/.cache/somp/repos/aiec/target/release/${b}" ]; then
+      ln -sf "${HOME}/.cache/somp/repos/aiec/target/release/${b}" "${BIN}/${b}"
+      echo "linked ${BIN}/${b}"
+    fi
+  done
+  echo "AIec built. Next (manual): guest image + plane — see AIec#self-hosting."
+  echo "Check host readiness any time: ${BIN}/aiec doctor"
+fi
 
 # --- model auth: fast local presence check only (no network, no secrets).
 # sOMP passes --model/auth straight through to omp (proven: MODELPROOF via

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs — sOMP</title>
+<meta name="description" content="sOMP install guide, command reference, and configuration.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="index.html" aria-label="sOMP home">
+    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="3" width="26" height="26" rx="5" fill="none" stroke="#8b95a1" stroke-width="2"/><rect x="13" y="8" width="6" height="12" rx="2" fill="#e8a33d"/><circle cx="16" cy="25" r="2" fill="#3ddc84"/></svg>
+    <span>sOMP</span>
+  </a>
+  <nav aria-label="Primary">
+    <a href="index.html#mechanism">Mechanism</a>
+    <a href="index.html#install">Install</a>
+    <a href="index.html#levels">Levels</a>
+    <a href="docs.html">Docs</a>
+    <a href="changelog.html">Changelog</a>
+    <a class="repo" href="https://github.com/fedoragobrowse-design/somp">GitHub</a>
+  </nav>
+</header>
+<main id="main">
+<div class="page-head">
+  <h1>Docs</h1>
+  <p>Install once, run governed daily. Everything below mirrors the repo README and <code class="mono">docs/config-sample.yaml</code> — the repo is the source of truth.</p>
+</div>
+<div class="doc-grid">
+  <nav class="doc-nav" aria-label="On this page">
+    <a href="#install-guide">Install guide</a>
+    <a href="#commands">Commands</a>
+    <a href="#config">Configuration</a>
+    <a href="#tui">Inside the TUI</a>
+    <a href="#update">Updating</a>
+    <a href="#limits">Known limits</a>
+  </nav>
+  <div class="doc-body">
+    <h2 id="install-guide">Install guide</h2>
+    <p>Prerequisites: <code class="mono">cargo</code>, <code class="mono">bun</code>, and <code class="mono">omp</code> on PATH. If omp is missing, the installer fetches it from <code class="mono">https://omp.sh/install</code> and stops — login stays yours.</p>
+    <pre><code>git clone https://github.com/fedoragobrowse-design/somp.git ~/code/somp &amp;&amp; ~/code/somp/install.sh</code></pre>
+    <p>The installer builds the release CLI, links <code class="mono">~/.local/bin/somp</code>, writes the <code class="mono">somp-omp</code> wrapper, seeds <code class="mono">~/.config/somp/config.yaml</code> if absent, then verifies (<code class="mono">somp doctor</code> + extension bundle). Idempotent — safe to re-run. It never touches <code class="mono">~/.omp</code>, your skills, MCP servers, or shell rc.</p>
+
+    <h2 id="commands">Commands</h2>
+    <table class="cmds">
+      <tr><td>somp</td><td>Opens the governed omp TUI (normal omp + sOMP extension)</td></tr>
+      <tr><td>somp-omp</td><td>Same via the wrapper; passes all flags (e.g. <code class="mono">--model</code>, <code class="mono">--resume</code>) through</td></tr>
+      <tr><td>omp</td><td>Plain omp — untouched, ungoverned, exactly as upstream ships it</td></tr>
+      <tr><td>somp level [strict|standard|off]</td><td>Show or set the sandbox protection level</td></tr>
+      <tr><td>somp update [--check]</td><td>Pull + rebuild from your repo only (<code class="mono">fedoragobrowse-design/somp</code>); <code class="mono">--check</code> reports without changing anything</td></tr>
+      <tr><td>somp doctor</td><td>Tier check: KVM, bwrap userns, nft</td></tr>
+      <tr><td>somp session up/exec/destroy/show</td><td>Long-lived session VM lifecycle</td></tr>
+      <tr><td>somp dispatch --task-file T.md</td><td>One governed subagent run: stage → exec → git diff → destroy</td></tr>
+      <tr><td>somp policy propose/show</td><td>Guard egress widening: propose; a human approves out-of-band</td></tr>
+      <tr><td>somp bench</td><td>Raw-JSON benchmarks (host proxies until Firecracker E2E lands)</td></tr>
+    </table>
+
+    <h2 id="config">Configuration</h2>
+    <p><code class="mono">~/.config/somp/config.yaml</code>. Every field has a fail-closed default except <code class="mono">guard.model_host</code> / <code class="mono">model_port</code> — no default, because inventing one would aim boxes at the wrong provider.</p>
+    <pre><code>aiec:
+  base_url: "https://127.0.0.1:18443"
+  key_file: /home/you/.config/aiec/api-key
+  api_key_env: "AIEC_API_KEY"
+
+session:
+  image: "somp-guest"   # built by guest/build-guest.sh
+  cpus: 2
+  mem_mb: 1024
+  disk_mb: 4096
+  ttl_s: 82800          # &lt; AIec MAX 86400s
+
+guard:
+  template: "model-only"
+  model_host: "api.example-model.com"  # REQUIRED: replace
+  model_port: 443
+
+srt:
+  settings_path: "guest/srt-settings.json"</code></pre>
+    <p><code class="mono">SOMP_LEVEL</code> in the environment overrides the configured level; unknown values fail closed.</p>
+
+    <h2 id="tui">Inside the TUI</h2>
+    <p>The status bar shows <code class="mono">sandbox 🛡️ STRICT</code> (or 🔶 STANDARD / ⚠️ OFF). <code class="mono">/somp-status</code> prints mode, level, and tier evidence; <code class="mono">/somp-level [strict|standard|off]</code> switches live. Resume governed with <code class="mono">somp-omp --resume &lt;id&gt;</code> — plain <code class="mono">omp --resume</code> reloads ungoverned, and the extension says so on shutdown. All built-in <code class="mono">/</code> commands work identically under <code class="mono">somp-omp</code>; only <code class="mono">task</code> is intentionally blocked (use <code class="mono">somp_task</code>).</p>
+
+    <h2 id="update">Updating</h2>
+    <p><code class="mono">somp update</code> pulls only <code class="mono">fedoragobrowse-design/somp</code> (exact-origin gate — lookalikes refused), branch-aware, then rebuilds + reinstalls. <code class="mono">omp update</code> is upstream's channel and never breaks the wrapper: it execs <code class="mono">omp</code> from PATH with an explicit <code class="mono">-e</code> flag, and the installer's bundle check fails loudly if the seam ever drifts.</p>
+
+    <h2 id="limits">Known limits</h2>
+    <p>Warm-start &lt;1s and per-subagent RSS are unproven (need Firecracker E2E); host-side srt numbers are proxies. The JEV bash gate is a tested pure function, not yet wired live. The full standing list lives in <code class="mono">docs/UNPROVEN.md</code> in the repo — failures are loud and fail-closed, never silent ungoverned fallbacks.</p>
+  </div>
+</div>
+</main>
+<footer>
+  <span>sOMP — Secure omp. Fail closed, never silent.</span>
+  <span class="mono">somp.gobrowse.dev</span>
+</footer>
+</body>
+</html>
