@@ -83,9 +83,10 @@ elif grep -Eq "api_key\s*:|access_token\s*:|refresh_token\s*:|oauth\s*:" "${HOME
 elif command -v omp >/dev/null 2>&1 && omp auth status >/dev/null 2>&1; then
   echo "omp auth status OK"
 elif command -v sqlite3 >/dev/null 2>&1 && [ -f "${HOME}/.omp/agent/agent.db" ]; then
-  NCRED=$(sqlite3 "${HOME}/.omp/agent/agent.db" "SELECT count(*) FROM auth_credentials;" 2>/dev/null || echo "?")
+  # Live credentials only: disabled_cause set = revoked/expired, must not count.
+  NCRED=$(sqlite3 "${HOME}/.omp/agent/agent.db" "SELECT count(*) FROM auth_credentials WHERE disabled_cause IS NULL;" 2>/dev/null || echo "?")
   if [ "${NCRED}" != "?" ] && [ "${NCRED}" -gt 0 ] 2>/dev/null; then
-    echo "stored omp credentials: ${NCRED} block(s) OK"
+    echo "stored omp credentials: ${NCRED} live block(s) OK"
   else
     echo "NOTE: no omp credentials found — run: omp login anthropic"
     echo "      (Claude Pro/Max OAuth) or set OPENCODE_API_KEY, then re-run."
