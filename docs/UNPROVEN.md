@@ -1,5 +1,22 @@
 # UNPROVEN (must verify before any security claim)
 
+## AIec-box proof 2026-10-10 (public repo, docker worker)
+
+- Proof ran INSIDE an AIec box (`python:3.13`, docker) via file-tool staging:
+  `bootstrap.sh` sha256 matches commit `9dda0810…` byte-identical,
+  `bash -n` clean, `srt-settings.json` parses (network+filesystem keys).
+- `secrets.rs` deny/scrub + `jev_gate.rs` decide() re-implemented in Python
+  in-box, same assertions as Rust tests: **5/5 passed** (logic-equivalence,
+  NOT a Rust compile proof — no cargo in box).
+- Honest limits: `rust:stable` image pull blocked by expired worker registry
+  cert; `git clone github.com` in-box blocked by worker-TLS interception
+  (egress MITM with expired box CA — do NOT bypass with `GIT_SSL_NO_VERIFY`);
+  no node in box so ext surface check not run.
+- Full `cargo build`+`cargo test` in-box proof BLOCKED on worker infra
+  (registry cert + TLS interception), not on the repo. Host ran 15/15 green.
+- Destroy hit the known Docker-worker reclaim bug (`Permission denied`
+  os error 13, box awaiting TTL) — same class as earlier orphan.
+
 ## Security rotation 2026-10-10 (operator key leaked into transcript)
 
 - `cat ~/.config/aiec/api-key` printed the live bootstrap-admin key into the
