@@ -1,0 +1,22 @@
+{
+  "$schema": "somp srt settings — schema of record: srt 4160dcd src/sandbox/sandbox-config.ts (SandboxRuntimeConfigSchema)",
+  "network": {
+    "allowedDomains": [],
+    "deniedDomains": ["*"],
+    "strictAllowlist": true
+  },
+  "filesystem": {
+    "denyRead": [
+      "/root",
+      "/home/*/.ssh",
+      "/home/*/.gnupg",
+      "/etc/somp/secrets",
+      "/run/secrets"
+    ],
+    "allowWrite": ["/workspace", "/tmp"],
+    "denyWrite": [
+      "/workspace/.git/hooks",
+      "/workspace/.git/config"
+    ]
+  }
+}

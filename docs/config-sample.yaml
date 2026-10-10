@@ -1,0 +1,35 @@
+# Sample somp config (~/.config/somp/config.yaml).
+# Every field has a fail-closed default; only guard.model_host/model_port
+# have NO default (server refuses ModelOnly without an endpoint, so inventing
+# one would aim sandboxes at a wrong provider).
+
+aiec:
+  base_url: "http://127.0.0.1:8080"
+  # key_file: /etc/somp/aiec.key   # alternative to AIEC_API_KEY env
+  api_key_env: "AIEC_API_KEY"
+
+session:
+  image: "somp-guest"   # built by guest/build-guest.sh
+  cpus: 2
+  mem_mb: 1024
+  disk_mb: 4096
+  ttl_s: 82800          # < AIec MAX 86400s
+
+guard:
+  template: "model-only"   # kebab-case PolicyTemplate; model-only is the default
+  model_host: "api.example-model.com"  # REQUIRED for model-only: replace with real endpoint
+  model_port: 443
+
+srt:
+  settings_path: "guest/srt-settings.json"
+
+# JEV bash gate (addition 2026-10-10): every bash command passes a Jev
+# classifier (TypeSafe AI, @typesafe-ai/sdk, jev.systemOne) before exec.
+# Key via TYPESAFE_API_KEY env (SDK convention), NEVER baked into this file.
+# Unset/misconfigured = gate refuses all bash (fail-closed). Policy pure
+# function in crates/somp-cli/src/jev_gate.rs (15/15 tests green); live
+# classifier wiring NOT YET IMPLEMENTED — see UNPROVEN.md.
+#jev:
+#  model: "jev-1.13.0"   # pin version so thresholds stay stable
+#  p_destructive_threshold: 0.15
+#  timeout_ms: 2000
