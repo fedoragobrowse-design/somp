@@ -17,19 +17,23 @@ session:
 
 guard:
   template: "model-only"   # kebab-case PolicyTemplate; model-only is the default
-  model_host: "api.example-model.com"  # REQUIRED for model-only: replace with real endpoint
+  # REQUIRED for model-only (server refuses ModelOnly without an endpoint).
+  # `somp model preset muse-spark` writes opencode.ai:443 (catalog baseUrl
+  # https://opencode.ai/zen/go/v1, openai-responses API, verified 2026-10-10).
+  model_host: "opencode.ai"
   model_port: 443
 
 srt:
   settings_path: "guest/srt-settings.json"
 
-# JEV bash gate (addition 2026-10-10): every bash command passes a Jev
-# classifier (TypeSafe AI, @typesafe-ai/sdk, jev.systemOne) before exec.
+security:
+  level: "strict"   # strict = Firecracker+Guard+srt; standard = Docker+Guard+srt (dev); off refuses governed work
+
+# JEV bash gate: classified before every dispatch --command + session exec.
 # Key via TYPESAFE_API_KEY env (SDK convention), NEVER baked into this file.
-# Unset/misconfigured = gate refuses all bash (fail-closed). Policy pure
-# function in crates/somp-cli/src/jev_gate.rs (15/15 tests green); live
-# classifier wiring NOT YET IMPLEMENTED — see UNPROVEN.md.
-#jev:
-#  model: "jev-1.13.0"   # pin version so thresholds stay stable
-#  p_destructive_threshold: 0.15
-#  timeout_ms: 2000
+# `somp jev on` enables; unset key / unreachable / timeout = REFUSE.
+jev:
+  enabled: false
+  model: "jev-latest"   # pin a version (e.g. jev-1.13.0) so thresholds stay stable
+  threshold: 0.15       # refuse when p(destructive) exceeds this
+  allow_ungoverned_bash: false

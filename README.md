@@ -41,17 +41,17 @@ what's missing instead of failing halfway.
 | `somp-omp` | Same thing via the wrapper (identical; `somp` just execs this path) |
 | `omp` | Plain omp — untouched, ungoverned, exactly as upstream ships it |
 | `somp level [strict\|standard\|off]` | Show/set sandbox protection level |
+| `somp model [show\|set <host> [port]\|preset muse-spark]` | Show/set Guard model endpoint (muse-spark pins `opencode.ai:443`) |
+| `somp jev [status\|on\|off --allow-ungoverned-bash\|model <n>\|threshold <v>]` | JEV bash-gate: needs `TYPESAFE_API_KEY` in env, fail-closed |
 | `somp update [--check]` | Pull + rebuild from **your** repo only (never upstream omp/npm) |
-| `somp doctor` | Tier check: KVM, bwrap userns, nft |
-| `somp session up/exec/destroy/show` | Long-lived session VM |
-| `somp dispatch --task-file T.md` | One governed subagent run |
-| `somp policy propose/show` | Guard egress widening (propose; a human approves out-of-band) |
 
 Inside the TUI:
 
 - Status bar shows `sandbox 🛡️ STRICT` (or 🔶 STANDARD / ⚠️ OFF).
 - `/somp-status` — mode, level, tier evidence.
 - `/somp-level [strict|standard|off]` — switch live.
+- `/somp-model [show|set <host> [port]|preset muse-spark]` — Guard endpoint.
+- `/somp-jev [status|on|off --allow-ungoverned-bash|model <n>|threshold <v>]` — bash-gate.
 - Resume governed with `somp-omp --resume <id>` (the extension rewrites
   omp's `omp --resume` hint in history; a shutdown reminder says so too).
 

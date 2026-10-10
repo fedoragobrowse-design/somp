@@ -1,4 +1,61 @@
 # UNPROVEN (must verify before any security claim)
+## Wire batch 2026-10-10 (OpenRouter 400, muse-spark endpoint, JEV live, blockers)
+
+### OpenRouter `mistral-large-4-0` 400 — root-caused in omp source
+- Failing request (`~/.omp/logs/http-400-requests/1791641872271-*.json`):
+  `include: ["reasoning.encrypted_content"]` + `reasoning: {effort: high}`
+  against `openrouter/mistralai/mistral-large-4-0` → provider 400.
+- `include` comes from `applyResponsesCompatPolicy`
+  (`packages/ai/src/providers/openai-shared.ts:4051`): the catalog entry
+  (`packages/catalog/src/models.json`: `openrouter/mistralai/mistral-large-4-0`)
+  sets `compat.includeEncryptedReasoning: true`, so omp unconditionally
+  pushes `reasoning.encrypted_content` — the provider rejects it.
+  Same entry maps `reasoning: true` + `thinking.mode: effort` (high valid),
+  so effort is fine; the encrypted-content include is the break.
+- sOMP-side fix (operator, no omp fork): avoid that model on OpenRouter, or
+  retry with reasoning disabled (`forceReasoningOff` path sends
+  `reasoning: {effort: none}` and skips the include push). Upstream fix
+  belongs in omp's compat table (drop `includeEncryptedReasoning` for this
+  model) — sOMP keeps omp changes minimal/upstreamable, so not patched here.
+- 403 `Key limit` (`63b18fa5`) is the OpenRouter key's spend cap, not a bug.
+- Recommended lane stays `opencode-go/muse-spark-1.3-contributor`
+  (`baseUrl https://opencode.ai/zen/go/v1`, `api openai-responses`,
+  verified 2026-10-10) — `somp model preset muse-spark` pins it.
+
+### JEV bash-gate: live (needs TYPESAFE_API_KEY + `somp jev on`)
+- `crates/somp-cli/src/jev_gate.rs`: `gate()` POSTs
+  `{TYPESAFE_BASE_URL|https://api.typesafe.ai}/v1/systemone`
+  (shape mirrors omp `ai/src/judgment/typesafe.ts`), `decide_with_threshold`
+  enforces `cfg.jev.threshold` (default 0.15). Fail-closed: disabled without
+  explicit `--allow-ungoverned-bash`, missing/empty key, unreachable,
+  timeout (10s), non-2xx, malformed = REFUSE. Secret-deny independent.
+- Wired into `dispatch --command` + `session exec` (2026-10-10); default
+  `cat TASK.md` path needs no classification. Manage via `somp jev …`
+  + `/somp-jev …` in TUI. UNPROVEN: no live classifier 200 yet (no key
+  provisioned) — gate proven only by fail-closed refusal paths + unit tests.
+
+### Guest image (somp-guest) — build runbook
+- Builder: `AIec/scripts/build-firecracker-guest.sh` (AIec checkout), needs
+  `AIEC_KERNEL` (guest vmlinux) + root. Overlays our `guest/bootstrap.sh`
+  (bakes srt to `/opt/somp/bin/srt`, settings to `/etc/somp/srt-settings.json`)
+  onto the AIec base (bwrap/socat/rg come from base, probed at boot).
+- Status: UNBUILT on this host. NUC approved 2026-10-10 (KVM + guest kernel
+  present) — run the builder there, register image as `somp-guest`, then
+  `somp session up --image somp-guest`.
+
+### Docker-worker destroy reclaim — upstream bug, precisely located
+- `01a1236f` class: container gone (exec 404s) but `destroy` fails
+  `Permission denied (os error 13)`, record stuck `running` till TTL.
+- Root: `aiec-runtime/src/docker.rs:1273 reclaim_workspace` →
+  `remove_dir_all` on guest-created files owned by a UID the worker cannot
+  `restore_owner_access`+remove; error maps to `Unavailable`, and
+  `aiec-api/src/runs.rs:1666 is_transient_destroy_error` retries
+  `Unavailable` 4x (400ms backoff) then surfaces terminal. Retry is correct
+  (transient kill/remove hiccups must not orphan), but an ownership failure
+  is PERMANENT — retry never converges. Upstream fix: chown-to-worker or
+  rootless-removal fallback in `reclaim_workspace`, or classify ownership
+  failures non-transient. sOMP already treats destroy-failure as hard error.
+
 
 ## AIec-box proof 2026-10-10 (public repo, docker worker)
 

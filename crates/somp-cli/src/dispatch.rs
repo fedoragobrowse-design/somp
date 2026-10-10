@@ -98,6 +98,11 @@ pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput
     // Secret-path deny BEFORE creating any VM (upstream a1f2274): operator
     // secret paths are never legitimate task/command/file arguments.
     crate::secrets::deny_secret_paths_in_dispatch(&task_text, &args.command, &args.file)?;
+    // JEV gate BEFORE creating any VM: an unclassified custom command must
+    // never cost a sandbox (fail-closed ordering: deny → classify → create).
+    if !args.command.is_empty() {
+        crate::jev_gate::gate(&args.command.join(" "), &cfg.jev).await?;
+    }
     let t0 = Instant::now();
     let client = cfg.aiec_client()?;
     let req = cfg.subagent_create_request(args.cpus, args.mem, args.timeout_s)?;
@@ -207,10 +212,8 @@ async fn dispatch_inner(
             format!("cat {REPO}/TASK.md"),
         ]
     } else {
-        // Custom commands bypass the srt wrapper: the Guard boundary still
-        // holds (network-off + model-endpoint-only), but in-guest filesystem
-        // enforcement is whatever the operator's command provides. Loud on
-        // purpose — silence here would be fail-open.
+        // Already classified in dispatch() before VM create; Guard boundary
+        // still applies. Loud on purpose — silence here would be fail-open.
         eprintln!("warning: custom --command runs WITHOUT the srt wrapper (Guard boundary still applies)");
         args.command.clone()
     };

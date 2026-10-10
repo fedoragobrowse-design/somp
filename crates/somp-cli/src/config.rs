@@ -16,6 +16,8 @@ pub struct Config {
     #[serde(default)]
     pub guard: GuardCfg,
     #[serde(default)]
+    pub jev: JevCfg,
+    #[serde(default)]
     pub srt: SrtCfg,
     #[serde(default)]
     pub security: SecurityCfg,
@@ -52,9 +54,31 @@ pub struct GuardCfg {
     /// Model endpoint for the model-only template (REQUIRED server-side:
     /// GuardPolicy::template(ModelOnly, None, _) is an error). No default:
     /// inventing an endpoint would aim the sandbox at a wrong provider.
-    /// Set guard.model_host + guard.model_port in config.yaml.
+    /// Set guard.model_host + guard.model_port in config.yaml, or
+    /// `somp model set <host> [port]`. Built-in preset: `somp model preset
+    /// muse-spark` pins opencode.ai:443 (catalog baseUrl
+    /// https://opencode.ai/zen/go/v1, verified in omp models.json).
     pub model_host: Option<String>,
     pub model_port: Option<u16>,
+}
+
+/// JEV bash-gate config: classifier that must Allow a command before exec.
+/// Env TYPESAFE_API_KEY wins for the key (SDK convention, never baked in).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct JevCfg {
+    /// Classifier on/off. Default false (designed-not-wired → now wired,
+    /// but opt-in until TYPESAFE_API_KEY is provisioned).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Model pinned so thresholds stay stable (docs: pin in production).
+    #[serde(default = "default_jev_model")]
+    pub model: String,
+    /// Confirm-if-p(destructive) threshold. Default 0.15 (Jev docs pin).
+    #[serde(default = "default_jev_threshold")]
+    pub threshold: f64,
+    /// Explicit operator escape hatch: allow ungoverned bash (audited).
+    #[serde(default)]
+    pub allow_ungoverned_bash: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -161,6 +185,12 @@ fn default_ttl() -> u64 {
 fn default_template() -> String {
     "model-only".into()
 }
+fn default_jev_model() -> String {
+    "jev-latest".into()
+}
+fn default_jev_threshold() -> f64 {
+    crate::jev_gate::P_DESTRUCTIVE_THRESHOLD
+}
 fn default_srt_settings() -> PathBuf {
     PathBuf::from("guest/srt-settings.json")
 }
@@ -191,6 +221,16 @@ impl Default for GuardCfg {
             template: default_template(),
             model_host: None,
             model_port: None,
+        }
+    }
+}
+impl Default for JevCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: default_jev_model(),
+            threshold: default_jev_threshold(),
+            allow_ungoverned_bash: false,
         }
     }
 }

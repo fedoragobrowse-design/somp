@@ -74,13 +74,17 @@ fi
 echo "== model auth check =="
 if [ -n "${OPENCODE_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "provider key in env OK (name only, never printed)"
-# omp stores login credentials file-based (agent/config.yml); the sqlite
-# auth_credential_blocks table is empty on file-auth setups — check the file.
-elif grep -qi "api_key\|oauth\|opencode" "${HOME}/.omp/agent/config.yml" 2>/dev/null; then
+# omp credentials are file-keyed (api_key:/access_token:/oauth: fields), NOT
+# model names: the old grep for 'opencode' matched model-role lines
+# (opencode-go/muse-spark…, xai-oauth/grok-4.5) with no credential behind
+# them — false OK on every machine. Match credential fields only.
+elif grep -Eq "api_key\s*:|access_token\s*:|refresh_token\s*:|oauth\s*:" "${HOME}/.omp/agent/config.yml" 2>/dev/null; then
   echo "stored omp credentials in agent/config.yml OK"
+elif command -v omp >/dev/null 2>&1 && omp auth status >/dev/null 2>&1; then
+  echo "omp auth status OK"
 elif command -v sqlite3 >/dev/null 2>&1 && [ -f "${HOME}/.omp/agent/agent.db" ]; then
-  NCRED=$(sqlite3 "${HOME}/.omp/agent/agent.db" "SELECT count(*) FROM auth_credential_blocks;" 2>/dev/null || echo "?")
-  if [ "${NCRED}" != "?" ] && [ "${NCRED}" -gt 0 ]; then
+  NCRED=$(sqlite3 "${HOME}/.omp/agent/agent.db" "SELECT count(*) FROM auth_credentials;" 2>/dev/null || echo "?")
+  if [ "${NCRED}" != "?" ] && [ "${NCRED}" -gt 0 ] 2>/dev/null; then
     echo "stored omp credentials: ${NCRED} block(s) OK"
   else
     echo "NOTE: no omp credentials found — run: omp login anthropic"

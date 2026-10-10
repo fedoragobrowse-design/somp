@@ -51,6 +51,19 @@ enum Cmd {
     /// Show or set the governed security level (strict|standard|off).
     /// No arg prints the effective level (SOMP_LEVEL env wins over config).
     Level { level: Option<String> },
+    /// Model endpoint for the Guard model-only template: show, set, or apply
+    /// a preset. `somp model preset muse-spark` pins opencode.ai:443
+    /// (verified in omp models.json: opencode.ai/zen/go/v1).
+    Model {
+        #[command(subcommand)]
+        op: ModelOp,
+    },
+    /// JEV bash-gate: show status, enable/disable, set model/threshold.
+    /// Needs TYPESAFE_API_KEY in env (never stored in config).
+    Jev {
+        #[command(subcommand)]
+        op: JevOp,
+    },
     /// Update sOMP from YOUR repo (fedoragobrowse-design/somp): git pull +
     /// rebuild + reinstall links. Never touches upstream omp or npm.
     Update {
@@ -89,6 +102,31 @@ enum SessionOp {
 }
 
 #[derive(Subcommand)]
+enum ModelOp {
+    /// Show the current Guard model endpoint (or lack of one).
+    Show,
+    /// Set host and optional port (default 443).
+    Set { host: String, port: Option<u16> },
+    /// Apply a named preset: `muse-spark` → opencode.ai:443.
+    Preset { name: String },
+}
+#[derive(Subcommand)]
+enum JevOp {
+    /// Show JEV status: enabled, model, threshold, key presence (name only).
+    Status,
+    /// Enable the gate (needs TYPESAFE_API_KEY at exec time, not now).
+    On,
+    /// Disable the gate — refuses unless --allow-ungoverned-bash is explicit.
+    Off {
+        #[arg(long)]
+        allow_ungoverned_bash: bool,
+    },
+    /// Pin the classifier model (default jev-latest).
+    Model { name: String },
+    /// Set the p(destructive) refuse threshold (default 0.15).
+    Threshold { value: f64 },
+}
+#[derive(Subcommand)]
 enum PolicyOp {
     /// Submit a Guard widening proposal (agent proposes; human approves out-of-band
     /// with a DIFFERENT key: POST .../proposals/{id}/approve).
@@ -126,6 +164,8 @@ async fn main() -> Result<()> {
         Cmd::Tui { .. } => unreachable!("handled above"),
         Cmd::Doctor => tier::doctor(),
         Cmd::Level { level } => level_cmd(cfg, level),
+        Cmd::Model { op } => model_cmd(cfg, op),
+        Cmd::Jev { op } => jev_cmd(cfg, op),
         Cmd::Update { check, allow_foreign_origin } => update_cmd(check, allow_foreign_origin),
         Cmd::Session { op } => session(cfg, op).await,
         Cmd::Dispatch(args) => dispatch::run(&cfg, args).await,
@@ -326,6 +366,106 @@ fn level_cmd(cfg: config::Config, level: Option<String>) -> Result<()> {
         }
     }
 }
+/// Read-modify-write one config subtree, creating parent tables on the fly
+/// (same Null-index guard as level_cmd).
+fn config_set(path: &[&str], value: serde_yaml::Value) -> Result<()> {
+    let cfg_path = config::config_path();
+    let mut raw: serde_yaml::Value = if cfg_path.exists() {
+        serde_yaml::from_str(&std::fs::read_to_string(&cfg_path)?)?
+    } else {
+        serde_yaml::Value::Mapping(Default::default())
+    };
+    let mut node = &mut raw;
+    for key in &path[..path.len() - 1] {
+        if !node.get(*key).is_some_and(|v| v.is_mapping()) {
+            node[*key] = serde_yaml::Value::Mapping(Default::default());
+        }
+        node = &mut node[*key];
+    }
+    node[path[path.len() - 1]] = value;
+    if let Some(parent) = cfg_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&cfg_path, serde_yaml::to_string(&raw)?)?;
+    Ok(())
+}
+/// Guard model endpoint: show/set/preset. Presets are pinned to catalog-
+/// verified baseUrls (omp packages/catalog/src/models.json), not guesses.
+fn model_cmd(cfg: config::Config, op: ModelOp) -> Result<()> {
+    match op {
+        ModelOp::Show => {
+            match (&cfg.guard.model_host, cfg.guard.model_port) {
+                (Some(h), Some(p)) => println!("guard model endpoint: {h}:{p} (template {})", cfg.guard.template),
+                _ => println!("guard model endpoint: UNSET — governed dispatch will refuse until `somp model set <host> [port]` or `somp model preset muse-spark`"),
+            }
+            Ok(())
+        }
+        ModelOp::Set { host, port } => {
+            let port = port.unwrap_or(443);
+            if port == 0 {
+                bail!("port 0 is not a valid model endpoint");
+            }
+            config_set(&["guard", "model_host"], serde_yaml::Value::String(host.clone()))?;
+            config_set(&["guard", "model_port"], serde_yaml::Value::Number(port.into()))?;
+            println!("guard model endpoint set to {host}:{port}");
+            Ok(())
+        }
+        ModelOp::Preset { name } => {
+            match name.to_lowercase().as_str() {
+                "muse-spark" => {
+                    config_set(&["guard", "model_host"], serde_yaml::Value::String("opencode.ai".into()))?;
+                    config_set(&["guard", "model_port"], serde_yaml::Value::Number(443.into()))?;
+                    println!("guard model endpoint ← muse-spark preset: opencode.ai:443");
+                    println!("(catalog baseUrl https://opencode.ai/zen/go/v1, openai-responses API)");
+                    Ok(())
+                }
+                other => bail!("unknown preset {other:?}: want muse-spark"),
+            }
+        }
+    }
+}
+/// JEV gate management. Key presence is name-only (never print bytes).
+fn jev_cmd(cfg: config::Config, op: JevOp) -> Result<()> {
+    match op {
+        JevOp::Status => {
+            let key = match std::env::var("TYPESAFE_API_KEY") {
+                Ok(k) if !k.trim().is_empty() => "TYPESAFE_API_KEY: set (bytes hidden)",
+                _ => "TYPESAFE_API_KEY: MISSING — gate will refuse until exported",
+            };
+            println!("jev gate: {} (model {}, threshold {})", if cfg.jev.enabled { "ON" } else { "OFF" }, cfg.jev.model, cfg.jev.threshold);
+            println!("{key}");
+            println!("unguarded-bash escape hatch: {}", if cfg.jev.allow_ungoverned_bash { "ALLOWED (explicit)" } else { "denied (default)" });
+            Ok(())
+        }
+        JevOp::On => {
+            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(true))?;
+            println!("jev gate enabled (needs TYPESAFE_API_KEY in env at exec time)");
+            Ok(())
+        }
+        JevOp::Off { allow_ungoverned_bash } => {
+            if !allow_ungoverned_bash {
+                bail!("refusing: `somp jev off` without --allow-ungoverned-bash would silently unguard bash — pass the flag explicitly to own it");
+            }
+            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(false))?;
+            config_set(&["jev", "allow_ungoverned_bash"], serde_yaml::Value::Bool(true))?;
+            println!("jev gate disabled WITH explicit unguarded-bash audit flag");
+            Ok(())
+        }
+        JevOp::Model { name } => {
+            config_set(&["jev", "model"], serde_yaml::Value::String(name.clone()))?;
+            println!("jev model pinned to {name}");
+            Ok(())
+        }
+        JevOp::Threshold { value } => {
+            if !(0.0..=1.0).contains(&value) {
+                bail!("threshold must be 0.0..=1.0, got {value}");
+            }
+            config_set(&["jev", "threshold"], serde_yaml::Value::Number(serde_yaml::Number::from(value)))?;
+            println!("jev threshold set to {value}");
+            Ok(())
+        }
+    }
+}
 
 async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
     let client = cfg.aiec_client()?;
@@ -384,8 +524,11 @@ async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
             if command.is_empty() {
                 bail!("nothing to exec");
             }
-            let st = config::session_state_load()?.context("no session (somp session up first)")?;
+            // Fail-closed ordering: deny → classify → touch session/plane.
+            // An unclassified command never even reads session state.
             crate::secrets::deny_secret_paths_in_dispatch("", &command, &[])?;
+            crate::jev_gate::gate(&command.join(" "), &cfg.jev).await?;
+            let st = config::session_state_load()?.context("no session (somp session up first)")?;
             let r = client.exec_command(st.id, command, None, 300).await?;
             // Same print boundary as dispatch: scrub before persisting to terminal.
             print!("{}", crate::secrets::scrub(&r.stdout));

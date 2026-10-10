@@ -296,4 +296,40 @@ pi.registerCommand("somp-status", {
 			say(ctx, `sandbox protection level → ${levelBadge(want)} (${want})`);
 		},
 	});
+	pi.registerCommand("somp-model", {
+		description: "Show or set Guard model endpoint: /somp-model [show|set <host> [port]|preset muse-spark]",
+		handler: async (args, ctx) => {
+			const parts = args.trim().split(/\s+/).filter(Boolean);
+			const sub = (parts[0] ?? "show").toLowerCase();
+			const rest = parts.slice(1);
+			const cliArgs = sub === "show" && rest.length === 0 ? ["model", "show"]
+				: sub === "set" && rest.length >= 1 ? ["model", "set", ...rest]
+				: sub === "preset" && rest.length === 1 ? ["model", "preset", ...rest]
+				: null;
+			if (!cliArgs) {
+				say(ctx, `usage: /somp-model [show|set <host> [port]|preset muse-spark]`);
+				return;
+			}
+			const r = spawnSync(SOMP_PATH, cliArgs, { encoding: "utf-8", timeout: 10000 });
+			say(ctx, ((r.stdout ?? "") + (r.stderr ?? "")).trim() || `somp model exit ${r.status}`);
+		},
+	});
+	pi.registerCommand("somp-jev", {
+		description: "JEV bash-gate: /somp-jev [status|on|off --allow-ungoverned-bash|model <name>|threshold <v>]",
+		handler: async (args, ctx) => {
+			const parts = args.trim().split(/\s+/).filter(Boolean);
+			const sub = (parts[0] ?? "status").toLowerCase();
+			const rest = parts.slice(1);
+			const cliArgs = (sub === "status" && rest.length === 0) || (sub === "on" && rest.length === 0) ? ["jev", sub]
+				: sub === "off" ? ["jev", "off", ...rest]
+				: (sub === "model" || sub === "threshold") && rest.length === 1 ? ["jev", sub, ...rest]
+				: null;
+			if (!cliArgs) {
+				say(ctx, `usage: /somp-jev [status|on|off --allow-ungoverned-bash|model <name>|threshold <v>]`);
+				return;
+			}
+			const r = spawnSync(SOMP_PATH, cliArgs, { encoding: "utf-8", timeout: 10000 });
+			say(ctx, ((r.stdout ?? "") + (r.stderr ?? "")).trim() || `somp jev exit ${r.status}`);
+		},
+	});
 }
