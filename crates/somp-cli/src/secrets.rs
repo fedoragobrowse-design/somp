@@ -16,16 +16,30 @@
 
 use anyhow::{bail, Result};
 
-/// Secret path fragments that are never legitimate dispatch arguments.
-/// Upstream list (harness/src/tools/bash.rs @ a1f2274) verbatim.
-const SECRET_PATH_FRAGMENTS: &[&str] = &[
-    ".config/aiec",
-    ".ssh/",
-    "api-key",
-    "openrouter-key",
-    "mcp-token",
-    "key.txt",
-];
+	/// Secret path fragments that are never legitimate dispatch arguments.
+	/// Upstream list (harness/src/tools/bash.rs @ a1f2274) plus extensions
+	/// from operator recon (AUTH-KEYS store, key-file variants). Mirrored in
+	/// `ext/somp-ext.ts` SECRET_PATH_FRAGMENTS — additions must land in both.
+	const SECRET_PATH_FRAGMENTS: &[&str] = &[
+	    ".config/aiec",
+	    ".ssh/",
+	    ".ssh",
+	    "api-key",
+	    "api_key",
+	    "apikey",
+	    "auth-keys",
+	    "auth_keys",
+	    "authkeys",
+	    "AUTH-KEYS",
+	    "openrouter-key",
+	    "mcp-token",
+	    "mcp_token",
+	    "key.txt",
+	    "key.pem",
+	    "id_ed25519",
+	    "id_rsa",
+	    ".pem",
+	];
 
 /// Env vars whose values are treated as secrets if they appear in output.
 /// Upstream list (harness/src/redaction.rs @ a1f2274, post-fix names).
@@ -98,14 +112,28 @@ pub fn scrub(text: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn denies_operator_key_paths() {
-        assert!(deny_secret_path("cat ~/.config/aiec/api-key").is_err());
-        assert!(deny_secret_path("cat ~/.ssh/id_ed25519").is_err());
-        assert!(deny_secret_path("--file /tmp/x=openrouter-key").is_err());
-        assert!(deny_secret_path("echo harmless").is_ok());
-        assert!(deny_secret_path("cat /workspace/repository/TASK.md").is_ok());
-    }
+	    #[test]
+	    fn denies_operator_key_paths() {
+	        assert!(deny_secret_path("cat ~/.config/aiec/api-key").is_err());
+	        assert!(deny_secret_path("cat ~/.ssh/id_ed25519").is_err());
+	        assert!(deny_secret_path("--file /tmp/x=openrouter-key").is_err());
+	        assert!(deny_secret_path("echo harmless").is_ok());
+	        assert!(deny_secret_path("cat /workspace/repository/TASK.md").is_ok());
+	    }
+	
+	    #[test]
+	    fn denies_key_store_and_keyfile_variants() {
+	        // Operator recon: ~/AUTH-KEYS store (dash/underscore/upper forms),
+	        // ~/.ssh without trailing slash, common key-file name variants.
+	        assert!(deny_secret_path("read ~/AUTH-KEYS").is_err());
+	        assert!(deny_secret_path("ls ~/auth-keys").is_err());
+	        assert!(deny_secret_path("cat ~/auth_keys").is_err());
+	        assert!(deny_secret_path("ls ~/.ssh").is_err());
+	        assert!(deny_secret_path("cat ~/id_rsa").is_err());
+	        assert!(deny_secret_path("cat ~/key.pem").is_err());
+	        assert!(deny_secret_path("cat ~/Downloads/key.txt").is_err());
+	        assert!(deny_secret_path("cat /workspace/repository/TASK.md").is_ok());
+	    }
 
     #[test]
     fn scrubs_env_secret_values() {

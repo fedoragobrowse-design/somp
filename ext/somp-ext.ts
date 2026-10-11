@@ -113,11 +113,150 @@ if (governed) {
 	const SECRET_PATH_FRAGMENTS = [
 		".config/aiec",
 		".ssh/",
+		".ssh",
 		"api-key",
+		"api_key",
+		"apikey",
+		"auth-keys",
+		"auth_keys",
+		"authkeys",
+		"AUTH-KEYS",
 		"openrouter-key",
 		"mcp-token",
+		"mcp_token",
 		"key.txt",
+		"key.pem",
+		"id_ed25519",
+		"id_rsa",
+		".pem",
 	];
+	const secretHit = (s: string): string | null => {
+		if (typeof s !== "string") return null;
+		for (const frag of SECRET_PATH_FRAGMENTS) if (s.includes(frag)) return frag;
+		return null;
+	};
+	const SECRET_REFUSAL =
+		"sOMP: that path names an operator secret (key material / tokens / control-plane credentials). " +
+		"Reads of secret files are refused even on the host session — the agent never needs key BYTES. " +
+		"To use a model or the plane, ask for task-provided credentials (bindings/placeholders) or have the operator run `somp model show` themselves.";
+	// --- 1a2. Network tools: no host-network egress for the agent, period.
+	// `read` with a URL fetches through the host process (read.ts:949 "URL
+	// read pipeline"); web_search / browser / github / eval-fetch / mcp
+	// tools are all host egress too. Governed network use goes through the
+	// GUEST (somp_task → disposable microVM; standard has no NIC, strict
+	// has Guard model-endpoint-only egress). Block table is tool NAMES
+	// (verified: web/search/index.ts:391, gh.ts:137, eval.ts:348,
+	// builtin-names.ts:65-67 for mcp__*).
+	const NET_BLOCKED: Record<string, true> = {
+		web_search: true, // WebSearchTool — hosted search API
+		browser: true, // browser prelude (eval code-mode export, not a tool_call name today — belt and suspenders)
+		github: true, // GithubTool — api.github.com egress
+		eval: true, // EvalTool — arbitrary JS/Python: fetch(), Bun.$ shell, file writes (bash-equivalent and worse)
+		debug: true, // DebugTool — launches programs under DAP (evaluate/repl = code exec; program launch = process spawn)
+		ida: true, // IdaTool — Python `exec` against shared IDBs (code exec)
+		vibe_spawn: true, // background agent sessions = ungoverned local spawns, same class as task
+		vibe_send: true,
+		vibe_wait: true,
+		vibe_list: true,
+		vibe_kill: true,
+	};
+	const NET_REFUSAL =
+		"sOMP governed mode: host-network egress is disabled for the agent. " +
+		"Web search, URL fetch, browser, github API, eval-run code, debugger-launched programs, IDA exec, and background agent sessions are all blocked on the host session. " +
+		"Network-dependent work goes inside a disposable microVM via somp_task (params.command runs IN THE GUEST). " +
+		"If the operator needs it on the host, they run it themselves.";
+	function isUrlLike(s: string): boolean {
+		const t = s.trim().toLowerCase();
+		return (
+			t.startsWith("http://") ||
+			t.startsWith("https://") ||
+			t.startsWith("ws://") ||
+			t.startsWith("wss://") ||
+			t.startsWith("ftp://") ||
+			t.startsWith("file://")
+		);
+	}
+	// --- 1a3. Filesystem scope: the agent works in ONE workspace root.
+	// Default: the cwd the operator launched somp-omp from (SOMP_WORKSPACE
+	// may pin it explicitly). Reads/writes/edits/searches outside the root
+	// are refused — no more `read ~` home-tree walks. Internal URIs
+	// (local://, skill://, history://, …) and omp-relative paths stay
+	// allowed: they are tool-internal, not host-fs access.
+	const WORKSPACE_ROOT = (() => {
+		const pin = process.env.SOMP_WORKSPACE;
+		const base = pin && pin.length > 0 ? pin : process.cwd();
+		// Normalize: strip trailing slashes (keep bare "/" intact).
+		return base.length > 1 ? base.replace(/\/+$/, "") : base;
+	})();
+	function inWorkspace(p: string): boolean {
+		if (typeof p !== "string" || p.length === 0) return true; // no scope given → tool default (cwd); allowed
+		const t = p.trim();
+		if (t.length === 0) return true;
+		// Tool-internal URIs (local://, skill://, history://, …) are not
+		// host-fs access — allowed. Anything else with "://" is treated as
+		// a host path (e.g. file://) and scoped below.
+		if (/^(local|skill|history|artifact|agent|proc|cfg|ssh|issue|pr|mcp|omp|xd):\/\//.test(t)) return true;
+		if (t === "~" || t.startsWith("~/") || t.startsWith("$HOME") || t.startsWith("%USERPROFILE%")) return false;
+		if (WORKSPACE_ROOT === "/") return t.startsWith("/"); // operator launched from /: any absolute path is in scope
+		if (t.startsWith("/")) {
+			return t === WORKSPACE_ROOT || t.startsWith(`${WORKSPACE_ROOT}/`);
+		}
+		// Relative path: resolve against the workspace root; ".." escapes
+		// that leave the root are refused.
+		const parts: string[] = [];
+		for (const seg of `${WORKSPACE_ROOT}/${t}`.split("/")) {
+			if (seg === "" || seg === ".") continue;
+			if (seg === "..") {
+				if (parts.length === 0) return false;
+				parts.pop();
+			} else parts.push(seg);
+		}
+		return `/${parts.join("/")}`.startsWith(WORKSPACE_ROOT);
+	}
+	const SCOPE_REFUSAL = `sOMP governed mode: host filesystem is scoped to the session workspace (${WORKSPACE_ROOT}). Paths outside it (home tree, /tmp, /etc, absolute strays) are refused. Work with files inside the workspace, or stage them into a microVM via somp_task params.files.`;
+	// Extract EVERY fs-scope argument across tools: `path`
+	// (read/write/edit/grep/glob/find/ast_grep), `file` (lsp single-file
+	// ops), `files` (lsp batch — every entry gates, not just the first).
+	// Unknown shapes → [] (tool default scope, allowed).
+	function inputPaths(input: unknown): string[] {
+		if (!input || typeof input !== "object") return [];
+		if ("path" in input && typeof input.path === "string") return [input.path];
+		if ("file" in input && typeof input.file === "string") return [input.file];
+		if ("files" in input && Array.isArray(input.files)) {
+			return input.files.filter((f: unknown): boolean => typeof f === "string");
+		}
+		return [];
+	}
+	// Check every fs-scope path: secret deny first, then workspace scope.
+	// Returns the block reason or null (all clear).
+	function checkPaths(paths: string[]): string | null {
+		for (const p of paths) {
+			const hit = secretHit(p);
+			if (hit) return `${SECRET_REFUSAL} (matched ${JSON.stringify(hit)})`;
+			if (!inWorkspace(p)) return SCOPE_REFUSAL;
+		}
+		return null;
+	}
+	// Shell out to `somp jev check <command>`: exit 0 = allow, else refuse.
+	// Spawn error / timeout / non-zero = REFUSE (fail-closed, never allow).
+	function jevCheck(command: string): { allow: boolean; reason: string } {
+		try {
+			const r = spawnSync(SOMP_PATH, ["jev", "check", command], {
+				encoding: "utf-8",
+				timeout: 30_000,
+				env: process.env,
+			});
+			const out = ((r.stdout ?? "") + "\n" + (r.stderr ?? "")).slice(0, 2000);
+			if (r.status === 0) return { allow: true, reason: "" };
+			const m = /refuse: ([^\n]+)/.exec(r.stdout ?? "");
+			return { allow: false, reason: m?.[1]?.trim() ?? out.trim().slice(0, 500) ?? `exit ${r.status}` };
+		} catch (e) {
+			return { allow: false, reason: `jev check failed to run (${String(e).slice(0, 200)}); fail-closed` };
+		}
+	}
+	// Env vars whose VALUES are treated as secrets if they appear in tool
+	// results. Mirrors SECRET_ENV_NAMES in crates/somp-cli/src/secrets.rs
+	// (upstream harness/src/redaction.rs @ a1f2274 post-fix names).
 	const SECRET_ENV_NAMES = [
 		"AIEC_AGENT_API_KEY",
 		"AIEC_API_KEY",
@@ -136,32 +275,6 @@ if (governed) {
 		"NPM_TOKEN",
 		"TYPESAFE_API_KEY",
 	];
-	const secretHit = (s: string): string | null => {
-		if (typeof s !== "string") return null;
-		for (const frag of SECRET_PATH_FRAGMENTS) if (s.includes(frag)) return frag;
-		return null;
-	};
-	const SECRET_REFUSAL =
-		"sOMP: that path names an operator secret (key material / tokens / control-plane credentials). " +
-		"Reads of secret files are refused even on the host session — the agent never needs key BYTES. " +
-		"To use a model or the plane, ask for task-provided credentials (bindings/placeholders) or have the operator run `somp model show` themselves.";
-	// Shell out to `somp jev check <command>`: exit 0 = allow, else refuse.
-	// Spawn error / timeout / non-zero = REFUSE (fail-closed, never allow).
-	function jevCheck(command: string): { allow: boolean; reason: string } {
-		try {
-			const r = spawnSync(SOMP_PATH, ["jev", "check", command], {
-				encoding: "utf-8",
-				timeout: 30_000,
-				env: process.env,
-			});
-			const out = ((r.stdout ?? "") + "\n" + (r.stderr ?? "")).slice(0, 2000);
-			if (r.status === 0) return { allow: true, reason: "" };
-			const m = /refuse: ([^\n]+)/.exec(r.stdout ?? "");
-			return { allow: false, reason: m?.[1]?.trim() ?? out.trim().slice(0, 500) ?? `exit ${r.status}` };
-		} catch (e) {
-			return { allow: false, reason: `jev check failed to run (${String(e).slice(0, 200)}); fail-closed` };
-		}
-	}
 	// Scrub known secret VALUES (not names) from text, mirroring scrub().
 	// Values <8 chars skipped to avoid masking prose with short tokens.
 	function scrubValues(text: string): string {
@@ -178,9 +291,19 @@ if (governed) {
 		// --- 1b. Governed host-session gates (this TUI shell is UNSANDBOXED).
 		// bash: secret-path deny first (no key needed), then `somp jev check`
 		// (fail-closed: no TYPESAFE_API_KEY / timeout / spawn error = refuse).
-		// read/write/edit: secret-path deny only (JEV classifies bash; file
-		// tools need no classifier, just the path block).
+		// Net tools (web_search/eval/debug/ida/vibe_*/github/mcp__*) and
+		// read-URLs: hard block, no classifier (host egress by construction).
+		// read/write/edit/grep/glob/find/ast_grep/lsp/security_scan: secret
+		// deny + workspace scope. task: hard block → somp_task.
 		pi.on("tool_call", async event => {
+			// --- 1b0. Network egress block (fail-closed, no classifier).
+			// Exact-name tools + every mcp__* tool (MCP servers are
+			// host-process egress by construction — incl. the aiec MCP).
+			// Kept functional: network use moves INTO the guest via
+			// somp_task params.command, not off the host.
+			if (NET_BLOCKED[event.toolName] === true || event.toolName.startsWith("mcp__")) {
+				return { block: true, reason: NET_REFUSAL };
+			}
 			if (event.toolName === "bash") {
 				const input = event.input;
 				const cmd =
@@ -205,24 +328,31 @@ if (governed) {
 				}
 				return undefined;
 			}
-			// read/write/edit/grep/glob: secret-path deny on the `path`
-			// argument (the fs scope). grep PATTERNS are not blocked — a
-			// pattern like "api-key" over repo code is legitimate recon;
-			// only scoping the search AT a secret dir/file is refused.
+			// read: URL block first (URL read pipeline = host egress),
+			// then secret-path deny, then workspace scope.
+			if (event.toolName === "read") {
+				const paths = inputPaths(event.input);
+				for (const p of paths) if (isUrlLike(p)) return { block: true, reason: NET_REFUSAL };
+				const reason = checkPaths(paths);
+				if (reason !== null) return { block: true, reason };
+				return undefined;
+			}
+			// write/edit/grep/glob/find/ast_grep/lsp/security_scan:
+			// secret-path deny + workspace scope on the fs argument.
+			// grep PATTERNS are not blocked — only scoping the search AT a
+			// secret dir/file is refused.
 			if (
-				event.toolName === "read" ||
 				event.toolName === "write" ||
 				event.toolName === "edit" ||
 				event.toolName === "grep" ||
-				event.toolName === "glob"
+				event.toolName === "glob" ||
+				event.toolName === "find" ||
+				event.toolName === "ast_grep" ||
+				event.toolName === "lsp" ||
+				event.toolName === "security_scan"
 			) {
-				const input = event.input;
-				const p =
-					input && typeof input === "object" && "path" in input && typeof input.path === "string"
-						? input.path
-						: "";
-				const hit = secretHit(p);
-				if (hit) return { block: true, reason: `${SECRET_REFUSAL} (matched ${JSON.stringify(hit)})` };
+				const reason = checkPaths(inputPaths(event.input));
+				if (reason !== null) return { block: true, reason };
 				return undefined;
 			}
 			if (event.toolName !== "task") return undefined;
