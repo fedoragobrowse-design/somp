@@ -406,3 +406,24 @@
 	  needed; benign `echo sync-check-word` still reaches the classifier
 	  (`OPENROUTER_API_KEY unset` fail-closed, correct). Tests 41/41,
 	  clippy 0.
+	
+	## JEV egress deny widened for paste-6 leak classes (2026-10-11)
+	- Pentest evidence (`local://paste-6.md`): `getent hosts` resolved
+	  public DNS, `ping 1.1.1.1` got ICMP replies, and `python3 -c
+	  "socket.create_connection(…)"` opened a real TCP socket — all past
+	  the egress deny, which only knew fetch binaries + URL literals.
+	- Fix: `deny_network_command()` now also matches DNS/ICMP/recon tools
+	  (ping/dig/nslookup/host/traceroute/nmap/tcpdump/…), `getent hosts`
+	  (plain `getent passwd` stays allowed), interpreter-inline socket APIs
+	  (interpreter + inline/module flag + socket-family token;
+	  `python3 -m http.server`, `perl -e`, `ruby -rsocket -e`, …), and awk
+	  `/inet/tcp|udp/` redirections. Shared `starts_tool()` helper keeps
+	  `host`-vs-`hostname`/`ghost` boundaries exact.
+	- Live: all three paste-6 leak commands now `refuse: network egress in
+	  host bash refused (getent hosts|ping|interpreter socket)` exit 1 with
+	  no key; benign `hostname; getent passwd root` still reaches the
+	  classifier. Tests 42/42, clippy 0.
+	- Honest residue: string matching cannot see obfuscated imports
+	  (`__import__('so'+'cket')`) or socket code inside file arguments
+	  (`python3 evil.py`). The durable fix stays a netns for host bash —
+	  keyword lists narrow the window, they do not close the class.

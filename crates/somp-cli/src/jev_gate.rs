@@ -47,9 +47,40 @@ pub struct GateAnswer {
 	/// somp_task guest. A model verdict must never be able to allow what is
 	/// structurally refused, so this check is lexical, not classified.
 	/// Matches: URL literals (http/https/ws/ftp/ssh), well-known egress
-	/// binaries (curl/wget/ssh/nc/socat + common exfil aliases), and
-	/// `> /dev/tcp|udp/` redirections. Case-insensitive; matched token is
-	/// returned for the refusal message (token only, never command bytes).
+	/// binaries (curl/wget/ssh/nc/socat + exfil aliases), DNS/ICMP/recon
+	/// tools (ping/dig/nslookup/host/traceroute/nmap/tcpdump), `getent
+	/// hosts` (DNS resolution; plain `getent passwd` stays allowed),
+	/// interpreter inline code naming socket/shell-out APIs (`python3 -c
+	/// "socket.…"`, `node -e`, `perl -e`, `python3 -m http.server`), and
+	/// `> /dev/tcp|udp/` + awk `/inet/tcp|udp/` redirections.
+	/// Case-insensitive; matched token is returned for the refusal message
+	/// (token only, never command bytes).
+	/// NOT covered: obfuscated imports (`__import__('so'+'cket')`), file
+	/// arguments whose contents open sockets (`python3 evil.py`) — string
+	/// matching cannot see those; the durable fix is a netns (see UNPROVEN).
+	/// True when `lower` invokes `tool` at command start or after a shell
+	/// separator (`echo curl` prose stays false, `curl …` / `x && curl …`
+	/// stay true). Shared by the TOOL_MARKERS loop + getent/interp checks.
+	fn starts_tool(lower: &str, tool: &str) -> bool {
+	    const SEPS: &[&str] = &[";", "&&", "||", "|", "$(", "`", "\n"];
+	    if lower.starts_with(tool)
+	        && lower[tool.len()..].starts_with([' ', '\t', '\n', '-', '/', '"', '\''])
+	    {
+	        return true;
+	    }
+	    let mut rest = lower;
+	    while let Some(idx) = SEPS.iter().filter_map(|s| rest.find(s)).min() {
+	        rest = rest[idx..].trim_start_matches([';', '&', '|', '(', '`', '\n', ' ', '\t']);
+	        if rest.starts_with(tool)
+	            && rest[tool.len()..].starts_with([' ', '\t', '\n', '-', '/', '"', '\''])
+	        {
+	            return true;
+	        }
+	        rest = &rest[1.min(rest.len())..];
+	    }
+	    false
+	}
+	
 	pub fn deny_network_command(command: &str) -> Option<&'static str> {
 	    const URL_MARKERS: &[&str] = &[
 	        "http://", "https://", "ws://", "wss://", "ftp://", "ssh://",
@@ -59,8 +90,13 @@ pub struct GateAnswer {
 	        "curl ", "wget ", "ssh ", "scp ", "sftp ", "ftp ", "nc ", "ncat ",
 	        "socat ", "telnet ", "rsync ", "rclone ", "aria2c ", "axel ",
 	        "httpx ", "http ", "wget2 ", "lftp ",
+	        "ping ", "ping6 ", "dig ", "nslookup ", "host ", "traceroute ",
+	        "tracepath ", "arping ", "fping ", "hping3 ", "nping ", "nmap ",
+	        "masscan ", "mtr ", "whois ", "tcpdump ", "tshark ",
 	    ];
-	    const REDIR_MARKERS: &[&str] = &["/dev/tcp/", "/dev/udp/"];
+	    const REDIR_MARKERS: &[&str] = &[
+	        "/dev/tcp/", "/dev/udp/", "/inet/tcp/", "/inet/udp/",
+	    ];
 	    let lower = command.to_lowercase();
 	    for &m in URL_MARKERS {
 	        if lower.contains(m) {
@@ -69,19 +105,40 @@ pub struct GateAnswer {
 	    }
 	    // Tools match at command start or after a shell separator — `echo
 	    // curl` (the WORD curl in prose) must not fire, `curl …` must.
+	    // `host` needs a space boundary so `ghost`/`hostname` stay allowed.
 	    for &m in TOOL_MARKERS {
 	        let name = m.trim_end();
-	        if lower.starts_with(name) && lower[name.len()..].starts_with([' ', '\t', '\n', '-', '/']) {
+	        if starts_tool(&lower, name) {
 	            return Some(name);
 	        }
-	        for sep in [";", "&&", "||", "|", "$(", "`", "\n"] {
-	            if let Some(rest) = lower.split_once(sep) {
-	                let tail = rest.1.trim_start();
-	                if tail.starts_with(name) && tail[name.len()..].starts_with([' ', '\t', '\n', '-', '/']) {
-	                    return Some(name);
-	                }
-	            }
-	        }
+	    }
+	    // `getent hosts` resolves DNS (leaked in paste-6 audit); plain
+	    // `getent passwd|group|services` stays allowed (no network egress).
+	    if starts_tool(&lower, "getent") && lower.contains("hosts") {
+	        return Some("getent hosts");
+	    }
+	    // Interpreter inline code naming socket/shell-out APIs: `python3 -c
+	    // "socket.create_connection(…)"` opened a real TCP socket in the
+	    // paste-6 audit. Match interpreter + inline/module flag + network
+	    // token in the same command. Plain `python3 script.py` (file contents
+	    // unseen) and bare `-c` code without network tokens still reach the
+	    // classifier.
+	    const INTERP: &[&str] = &["python", "python3", "node", "bun", "deno", "perl", "ruby", "php", "lua", "r", "julia"];
+	    const INLINE_FLAG: &[&str] = &["-c", "-e", "--eval", "--execute", "-r", "-ro", "-m", "http.server", "socketserver"];
+	    const NET_TOKENS: &[&str] = &[
+	        "socket", "urllib", "requests", "fetch(", "xmlhttprequest",
+	        "net::", "tcpclient", "udpclient", "netcat", "getaddrinfo",
+	        "create_connection", "fsockopen", "stream_socket_client",
+	        "io::socket", "tcpsocket", "udpsocket", "http::", "reqwest",
+	        "curl_easy", "libcurl", "winsock", "wsasocket", "http.server",
+	        "socketserver", "httpserver", "webbrowser",
+	    ];
+	    let has_interp = INTERP.iter().any(|i| starts_tool(&lower, i));
+	    if has_interp
+	        && (INLINE_FLAG.iter().any(|f| lower.contains(f)) || lower.contains("socket"))
+	        && NET_TOKENS.iter().any(|t| lower.contains(t))
+	    {
+	        return Some("interpreter socket");
 	    }
 	    REDIR_MARKERS.iter().copied().find(|m| lower.contains(m))
 	}
@@ -438,9 +495,41 @@ mod tests {
 	    }
 	
 	    #[test]
+	    fn network_deny_covers_paste6_leak_classes() {
+	        // Paste-6 pentest evidence: getent (DNS), ping (ICMP), and
+	        // python3 -c socket (full L4) all reached the live network.
+	        for cmd in [
+	            "getent hosts example.com",
+	            "ping -c 1 -W 2 1.1.1.1",
+	            "ping6 -c 1 ::1",
+	            "dig +short example.com",
+	            "nslookup example.com",
+	            "host example.com",
+	            "traceroute 1.1.1.1",
+	            "nmap -sn 192.168.1.0/24",
+	            "python3 -c \"import socket;s=socket.create_connection(('example.com',80),5)\"",
+	            "python -c \"import urllib.request;print(urllib.request.urlopen('http://example.com').status)\"",
+	            "node -e \"fetch('http://example.com').then(r=>console.log(r.status))\"",
+	            "perl -e \"use IO::Socket;IO::Socket::INET->new('example.com:80')\"",
+	            "ruby -rsocket -e \"TCPSocket.new('example.com',80)\"",
+	            "php -r \"$s=fsockopen('example.com',80);\"",
+	            "python3 -m http.server 8080",
+	            "awk 'BEGIN{print > \"/inet/tcp/10.0.0.1/80\"}'",
+	        ] {
+	            assert!(deny_network_command(cmd).is_some(), "must deny: {cmd}");
+	        }
+	    }
+	
+	    #[test]
 	    fn network_deny_has_no_false_positives_on_safe_words() {
 	        // "sync"/"echo curl" contain decoy substrings but run no network.
-	        for cmd in ["sync", "echo hello", "echo curl is a tool", "ls -la"] {
+	        // "hostname"/"ghost" contain the "host" marker as a prefix-word.
+	        for cmd in [
+	            "sync", "echo hello", "echo curl is a tool", "ls -la",
+	            "hostname", "echo ghost", "getent passwd root",
+	            "python3 script.py", "node server.js",
+	            "echo ping is a word", "grep -r hosts src/",
+	        ] {
 	            assert!(deny_network_command(cmd).is_none(), "must allow: {cmd}");
 	        }
 	    }
