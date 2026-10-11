@@ -58,34 +58,102 @@ pub struct GateAnswer {
 	/// NOT covered: obfuscated imports (`__import__('so'+'cket')`), file
 	/// arguments whose contents open sockets (`python3 evil.py`) — string
 	/// matching cannot see those; the durable fix is a netns (see UNPROVEN).
+	/// Prefix commands that only wrap another command's argv (`timeout 10
+	/// curl …`, `sudo -u u ping …`, `bash -c "nc …"`, `… | xargs curl`).
+	/// After stripping, the remainder is token-scanned for tools — but ONLY
+	/// when a wrapper was actually stripped, so `grep -e curl` (no wrapper,
+	/// prose match) stays allowed while wrapper-laundered tools fail closed.
+	const WRAPPERS: &[&str] = &[
+	    "env", "timeout", "sudo", "doas", "runuser", "su", "nice", "nohup",
+	    "stdbuf", "unshare", "nsenter", "setsid", "flock", "ionice",
+	    "taskset", "numactl", "strace", "watch", "sh", "bash", "dash",
+	    "zsh", "fish", "ksh", "xargs", "script",
+	];
+	
+	/// Strip leading wrapper names; returns (remainder, progressed).
+	/// Loops so `sudo timeout 5 curl` strips twice. Flags/args between the
+	/// wrapper and the real command are NOT parsed — the remainder is
+	/// token-scanned instead (`timeout -s KILL 5 curl` still hits `curl`).
+	fn strip_wrappers(mut s: &str) -> (&str, bool) {
+	    let mut progressed = false;
+	    while let Some(r) = WRAPPERS.iter().find_map(|w| {
+	        let t = s.trim_start();
+	        if t == *w || (t.starts_with(w) && t[w.len()..].starts_with([' ', '\t', '\n'])) {
+	            Some(&t[w.len()..])
+	        } else {
+	            None
+	        }
+	    }) {
+	        s = r;
+	        progressed = true;
+	    }
+	    (s.trim_start(), progressed)
+	}
+	
+	/// Any whitespace/punct-delimited token of `s` names `tool`
+	/// (path-basename-aware: `/usr/bin/ping` counts as `ping`).
+	fn remainder_has_tool(s: &str, tool: &str) -> bool {
+	    s.split([' ', '\t', '\n', ';', '|', '&', '(', ')', '`', '"', '\'', '{', '}', '$', ',', ':', '=', '+'])
+	        .any(|tok| tok == tool || (tok.contains('/') && tok.rsplit('/').next() == Some(tool)))
+	}
+	
+	/// Whole command + every shell-separator tail (incl `find -exec`): each
+	/// is an independent candidate for tool matching.
+	fn candidates(lower: &str) -> Vec<&str> {
+	    const SEPS: &[&str] = &[";", "&&", "||", "|", "$(", "`", "\n", "-exec", "-execdir"];
+	    let mut out = vec![lower];
+	    let mut rest = lower;
+	    while let Some(idx) = SEPS.iter().filter_map(|s| rest.find(s)).min() {
+	        let mut tail = &rest[idx..];
+	        if let Some(r) = tail.strip_prefix("-execdir") { tail = r; }
+	        else if let Some(r) = tail.strip_prefix("-exec") { tail = r; }
+	        else { tail = tail.trim_start_matches([';', '&', '|', '(', '`', '$', '{', ' ', '\t']); }
+	        out.push(tail);
+	        rest = &rest[(idx + 1).min(rest.len())..];
+	    }
+	    out
+	}
+	
+	/// True when the candidate invokes `tool`: direct at start
+	/// (absolute-path aware: `/usr/bin/ping` matches `ping`), or as any
+	/// argv token once a WRAPPERS prefix was stripped (`timeout 5 ping …`,
+	/// `bash -c "nc …"`, `… | xargs curl`). `echo curl` prose stays false.
+	fn candidate_has_tool(cand: &str, tool: &str) -> bool {
+	    const AFTER: [char; 9] = [' ', '\t', '\n', '-', '/', '"', '\'', ')', '}'];
+	    let t = cand.trim_start();
+	    if t == tool || (t.starts_with(tool) && t[tool.len()..].starts_with(AFTER)) {
+	        return true;
+	    }
+	    if let Some(first) = t.split([' ', '\t', '\n']).next() {
+	        if first.contains('/') && first.rsplit('/').next() == Some(tool) {
+	            return true;
+	        }
+	    }
+	    let (stripped, progressed) = strip_wrappers(t);
+	    if progressed && remainder_has_tool(stripped, tool) {
+	        return true;
+	    }
+	    false
+	}
+	
 	/// True when `lower` invokes `tool` at command start or after a shell
 	/// separator (`echo curl` prose stays false, `curl …` / `x && curl …`
 	/// stay true). Shared by the TOOL_MARKERS loop + getent/interp checks.
 	fn starts_tool(lower: &str, tool: &str) -> bool {
-	    const SEPS: &[&str] = &[";", "&&", "||", "|", "$(", "`", "\n"];
-	    if lower.starts_with(tool)
-	        && lower[tool.len()..].starts_with([' ', '\t', '\n', '-', '/', '"', '\''])
-	    {
-	        return true;
-	    }
-	    let mut rest = lower;
-	    while let Some(idx) = SEPS.iter().filter_map(|s| rest.find(s)).min() {
-	        rest = rest[idx..].trim_start_matches([';', '&', '|', '(', '`', '\n', ' ', '\t']);
-	        if rest.starts_with(tool)
-	            && rest[tool.len()..].starts_with([' ', '\t', '\n', '-', '/', '"', '\''])
-	        {
-	            return true;
-	        }
-	        rest = &rest[1.min(rest.len())..];
-	    }
-	    false
+	    candidates(lower).iter().any(|c| candidate_has_tool(c, tool))
 	}
 	
 	pub fn deny_network_command(command: &str) -> Option<&'static str> {
 	    const URL_MARKERS: &[&str] = &[
 	        "http://", "https://", "ws://", "wss://", "ftp://", "ssh://",
+	        "git://",
 	    ];
 	    // Trailing space requires token-boundary: "nc" must not fire on "sync".
+	    // NOTE (delta audit 2026-10-11): this list is a best-effort screen,
+	    // not a boundary. `openssl s_client -connect` held a live TLS tunnel
+	    // past the previous list; it and its cousins are named here, but the
+	    // set of socket-capable binaries is unbounded — the durable fix is a
+	    // netns for host bash (see UNPROVEN), not more names.
 	    const TOOL_MARKERS: &[&str] = &[
 	        "curl ", "wget ", "ssh ", "scp ", "sftp ", "ftp ", "nc ", "ncat ",
 	        "socat ", "telnet ", "rsync ", "rclone ", "aria2c ", "axel ",
@@ -93,6 +161,13 @@ pub struct GateAnswer {
 	        "ping ", "ping6 ", "dig ", "nslookup ", "host ", "traceroute ",
 	        "tracepath ", "arping ", "fping ", "hping3 ", "nping ", "nmap ",
 	        "masscan ", "mtr ", "whois ", "tcpdump ", "tshark ",
+	        // TLS-tunnel-capable stock binaries (delta audit): openssl is on
+	        // essentially every box; gnutls-cli/stunnel/ncat are its cousins.
+	        "openssl ", "gnutls-cli ", "gnutls-serv ", "stunnel ",
+	        "s_client ", "s_server ", "openconnect ", "vpnc ", "iodine ",
+	        // DB/queue clients with network backends + misc socket holders.
+	        "mysql ", "psql ", "pgcli ", "mycli ", "redis-cli ", "mongosh ",
+	        "mongo ", "mosquitto_pub ", "mosquitto_sub ", "busybox ",
 	    ];
 	    const REDIR_MARKERS: &[&str] = &[
 	        "/dev/tcp/", "/dev/udp/", "/inet/tcp/", "/inet/udp/",
@@ -112,8 +187,57 @@ pub struct GateAnswer {
 	            return Some(name);
 	        }
 	    }
-	    // `getent hosts` resolves DNS (leaked in paste-6 audit); plain
-	    // `getent passwd|group|services` stays allowed (no network egress).
+	    // `git clone/fetch/pull/push/ls-remote` open the network; local-only
+	    // git (status/diff/log/add/commit/show/branch) stays allowed — the
+	    // dispatch diff loop depends on it. Matches subcommand as an argv
+	    // token so prose ("clone the repo pattern") does not fire.
+	    const GIT_NET: &[&str] = &[
+	        "clone", "fetch", "pull", "push", "ls-remote", "archive",
+	        "submodule",
+	    ];
+	    if starts_tool(&lower, "git") {
+	        let cands = candidates(&lower);
+	        for cand in &cands {
+	            let (stripped, _) = strip_wrappers(cand);
+	            let toks: Vec<&str> = stripped.split_whitespace().collect();
+	            // toks[0] is git (or its path); scan flags-aware: first
+	            // non-flag token after git is the subcommand. `-C <path>`
+	            // / `-c name=val` / `--git-dir <path>` consume the next
+	            // token (or are attached/self-contained) — without this,
+	            // `git -C /tmp/x fetch` misreads the path as the subcommand.
+	            const ARG_FLAGS: &[&str] = &[
+	                "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+	                "--super-prefix", "--config-env",
+	            ];
+	            let mut sub = None;
+	            let mut skip_next = false;
+	            for t in toks.iter().skip(1) {
+	                if skip_next {
+	                    skip_next = false;
+	                    continue;
+	                }
+	                if t.starts_with('-') && *t != "-" {
+	                    // Attached/self-contained (`-C/tmp/x`, `-cname=v`,
+	                    // `--git-dir=/p`): flag carries its own value.
+	                    let attached = (*t != "-C" && t.starts_with("-C"))
+	                        || (*t != "-c" && t.starts_with("-c"))
+	                        || (t.contains('=') && !t.starts_with("--exec-path"));
+	                    if !attached && ARG_FLAGS.contains(t) {
+	                        skip_next = true;
+	                    }
+	                    continue;
+	                }
+	                sub = Some(*t);
+	                break;
+	            }
+	            if let Some(s) = sub {
+	                let base = s.rsplit('/').next().unwrap_or(s);
+	                if GIT_NET.contains(&base) {
+	                    return Some("git remote");
+	                }
+	            }
+	        }
+	    }
 	    if starts_tool(&lower, "getent") && lower.contains("hosts") {
 	        return Some("getent hosts");
 	    }
@@ -423,6 +547,52 @@ mod tests {
 	        assert_eq!(h1, h2);
 	        assert!(!h1.contains("rm"));
 	        assert_eq!(h1.len(), 64);
+	    }
+	    #[test]
+	    fn delta_audit_tls_tunnel_and_wrappers_denied() {
+	        // Delta audit 2026-10-11: `openssl s_client -connect` held a
+	        // live TLSv1.3 tunnel past the previous list — highest-value
+	        // keyhole left. Plus wrapper-laundering + git remote shapes.
+	        for cmd in [
+	            "openssl s_client -connect example.com:443 -quiet",
+	            "echo | openssl s_client -connect 192.0.2.1:443",
+	            "gnutls-cli example.com",
+	            "stunnel /etc/stunnel/x.conf",
+	            "busybox wget http://example.com/x",
+	            "mysql -h db.example.com -u u -p",
+	            "psql -h db.example.com -U u",
+	            "git clone https://example.com/r.git",
+	            "git -C /tmp/x fetch origin",
+	            "git pull",
+	            "git ls-remote https://example.com/r.git",
+	            "timeout 10 curl -sI https://example.com",
+	            "sudo -u nobody ping -c 1 1.1.1.1",
+	            "bash -c \"nc example.com 80\"",
+	            "echo x | xargs curl -sI https://example.com",
+	            "timeout 5 openssl s_client -connect example.com:443",
+	            "/usr/bin/openssl s_client -connect example.com:443",
+	        ] {
+	            assert!(deny_network_command(cmd).is_some(), "must deny: {cmd}");
+	        }
+	    }
+	
+	    #[test]
+	    fn delta_safe_shapes_stay_allowed() {
+	        // Wrappers alone are not egress; local-only git stays allowed
+	        // (dispatch diff loop depends on it); sqlite3 has no backend.
+	        for cmd in [
+	            "timeout 10 echo done",
+	            "sudo -u nobody id",
+	            "git status",
+	            "git -C /workspace/repository diff --binary",
+	            "git log --oneline -5",
+	            "git add -N .",
+	            "sqlite3 /tmp/x.db 'select 1'",
+	            "grep -e curl src/",
+	            "echo openssl is a tool",
+	        ] {
+	            assert!(deny_network_command(cmd).is_none(), "must allow: {cmd}");
+	        }
 	    }
 	
 	    fn openrouter_envelope(content: &str) -> serde_json::Value {

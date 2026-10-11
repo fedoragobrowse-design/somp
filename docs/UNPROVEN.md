@@ -427,3 +427,30 @@
 	  (`__import__('so'+'cket')`) or socket code inside file arguments
 	  (`python3 evil.py`). The durable fix stays a netns for host bash —
 	  keyword lists narrow the window, they do not close the class.
+	
+	## Delta audit: openssl TLS tunnel + wrapper laundering closed (2026-10-11)
+	- Findings: `openssl s_client -connect example.com:443` held a live
+	  TLSv1.3 tunnel (stock binary, complete encrypted channel — most
+	  serious keyhole); wrapper prefixes (`timeout 10 curl`, `sudo … ping`,
+	  `bash -c "nc"`, `xargs curl`) laundered known tools past
+	  start-of-command matching; `git clone/fetch/pull` had no gate while
+	  the gate's own doc claimed the diff loop depends on local git.
+	- Fix: TOOL_MARKERS gains openssl/gnutls-cli/stunnel/s_client/DB
+	  clients/busybox (+ `git://` URL); new git-remote gate denies
+	  clone/fetch/pull/push/ls-remote/archive/submodule as first non-flag
+	  argv token (`-C <path>`/`-c`/`--git-dir` flag-arg aware so `git -C
+	  /tmp/x fetch` reads `fetch`, not the path) while status/diff/log/add
+	  stay allowed; new candidates()/strip_wrappers() match tools after
+	  shell separators AND wrapper prefixes with token scanning
+	  (absolute-path + find -exec aware). `echo curl` prose, `sqlite3`
+	  (local only, no backend), bare wrappers, and local git unaffected.
+	- Live: `openssl s_client -connect example.com:443` →
+	  `refused (openssl)` exit 1 keyless; `timeout 10 curl …` → refused.
+	  Tests 44/44, clippy 0.
+	- Agent's class argument accepted outright: the socket-capable set is
+	  unbounded and each name added is one keyhole narrowed, not the class
+	  closed. Durable fix stays netns-by-uid for host bash (+ nft output
+	  drop + CAP_NET_RAW drop + pinned DNS stub), with JEV as advisory +
+	  logging. None of that exists yet — recorded, not built. The
+	  `jev.enabled: false` vs enforcing-gate mismatch in
+	  somp-config-preproof.yaml is still unreconciled (see prior entry).
