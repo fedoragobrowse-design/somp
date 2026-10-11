@@ -125,6 +125,10 @@ enum JevOp {
     Model { name: String },
     /// Set the p(destructive) refuse threshold (default 0.15).
     Threshold { value: f64 },
+    /// Classify one command and exit 0 (allow) / 1 (refuse). Machine-readable:
+    /// prints `allow` or `refuse: <reason>` on stdout. For the governed TUI
+    /// extension, which shells out per bash call (fail-closed on spawn error).
+    Check { command: Vec<String> },
 }
 #[derive(Subcommand)]
 enum PolicyOp {
@@ -481,6 +485,31 @@ fn jev_cmd(cfg: config::Config, op: JevOp) -> Result<()> {
             println!("jev threshold set to {value}");
             Ok(())
         }
+        JevOp::Check { command } => {
+            if command.is_empty() {
+                bail!("nothing to check");
+            }
+            crate::secrets::deny_secret_paths_in_dispatch("", &command, &[])?;
+            // jev_cmd runs inside #[tokio::main]: no nested runtime allowed.
+            // block_in_place + Handle::block_on runs the gate on a blocking
+            // thread. Any scheduling failure is a refuse (fail-closed).
+            let verdict = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(crate::jev_gate::gate(&command.join(" "), &cfg.jev))
+            });
+            match verdict {
+                Ok(()) => {
+                    println!("allow");
+                    Ok(())
+                }
+                Err(e) => {
+                    // Machine-readable refuse on stdout (ext parses it);
+                    // anyhow Err still yields exit 1 (fail-closed).
+                    println!("refuse: {e:#}");
+                    bail!("refused");
+                }
+            }
+        }
     }
 }
 
@@ -659,5 +688,22 @@ mod update_tests {
         assert!(is_trusted_origin("ssh://git@github.com/fedoragobrowse-design/somp.git"));
         // Case-insensitive: git remotes vary in case.
         assert!(is_trusted_origin("HTTPS://GITHUB.COM/FEDORAGOBROWSE-DESIGN/SOMP.GIT"));
+    }
+    #[test]
+    fn check_arm_denies_secret_paths_pre_classifier() {
+        // `somp jev check` must refuse secret paths even with no key and
+        // no classifier reachable — the deny runs before gate().
+        let denied = crate::secrets::deny_secret_paths_in_dispatch(
+            "",
+            &["cat ~/.config/aiec/api-key".to_owned()],
+            &[],
+        );
+        assert!(denied.is_err());
+        let clean = crate::secrets::deny_secret_paths_in_dispatch(
+            "",
+            &["echo hello".to_owned()],
+            &[],
+        );
+        assert!(clean.is_ok());
     }
 }

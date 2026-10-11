@@ -57,14 +57,20 @@ export default function sompExt(pi: ExtensionAPI) {
 		}
 		return { level: "strict", source: "default" };
 	}
-	const { level: secLevel, source: secSource } = resolveLevel();
 	const levelBadge = (l: string) =>
-		l === "strict" ? "🛡️ STRICT" : l === "standard" ? "🔶 STANDARD" : "⚠️ OFF";
+		l === "strict" ? "DISP 🛡️ STRICT" : l === "standard" ? "DISP 🔶 STANDARD" : "DISP ⚠️ OFF";
+	// Badge honesty: this TUI shell always runs ON THE HOST as the operator
+	// user (full fs/network/env — same as plain omp). The badge names the
+	// level that will govern FUTURE somp_task/dispatch runs, not this
+	// session. Status lines repeat this so the badge never reads as
+	// "this session is contained".
+	const SESSION_NOTE = "this TUI shell runs on the host (unsandboxed); level governs dispatches only";
+	const { level: secLevel, source: secSource } = resolveLevel();
 	pi.logger.info(`somp-ext security level=${secLevel} (${secSource})`);
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		ctx.ui.setStatus("somp-level", `sandbox ${levelBadge(secLevel)}`);
+		ctx.ui.setStatus("somp-level", `sandbox ◆ ${levelBadge(secLevel)} — host shell; ${SESSION_NOTE}`);
 	});
 	// Governed resume: omp prints `omp --resume <id>` on TUI exit, which
 	// would reload the session WITHOUT this extension (unguarded). The
@@ -99,9 +105,126 @@ if (governed) {
 		return { content: next };
 	});
 }
+	// --- 1a. Inline secret-path deny (mirrors secrets.rs, ported a1f2274).
+	// Kept inline (not shelled to `somp jev check`) so reads can never pass
+	// while the CLI is missing/slow — spawn failure here is fail-CLOSED.
+	// Lists duplicated from crates/somp-cli/src/secrets.rs: fragment/env
+	// additions must land in both files.
+	const SECRET_PATH_FRAGMENTS = [
+		".config/aiec",
+		".ssh/",
+		"api-key",
+		"openrouter-key",
+		"mcp-token",
+		"key.txt",
+	];
+	const SECRET_ENV_NAMES = [
+		"AIEC_AGENT_API_KEY",
+		"AIEC_API_KEY",
+		"AIEC_API_CA",
+		"OPENAI_API_KEY",
+		"OPENROUTER_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"AIEC_MCP_TOKEN",
+		"AIEC_CONTROL_PLANE_TOKEN",
+		"AIEC_CONTROL_PLANE_URL",
+		"DATABASE_URL",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_SESSION_TOKEN",
+		"GITHUB_TOKEN",
+		"GH_TOKEN",
+		"NPM_TOKEN",
+		"TYPESAFE_API_KEY",
+	];
+	const secretHit = (s: string): string | null => {
+		if (typeof s !== "string") return null;
+		for (const frag of SECRET_PATH_FRAGMENTS) if (s.includes(frag)) return frag;
+		return null;
+	};
+	const SECRET_REFUSAL =
+		"sOMP: that path names an operator secret (key material / tokens / control-plane credentials). " +
+		"Reads of secret files are refused even on the host session — the agent never needs key BYTES. " +
+		"To use a model or the plane, ask for task-provided credentials (bindings/placeholders) or have the operator run `somp model show` themselves.";
+	// Shell out to `somp jev check <command>`: exit 0 = allow, else refuse.
+	// Spawn error / timeout / non-zero = REFUSE (fail-closed, never allow).
+	function jevCheck(command: string): { allow: boolean; reason: string } {
+		try {
+			const r = spawnSync(SOMP_PATH, ["jev", "check", command], {
+				encoding: "utf-8",
+				timeout: 30_000,
+				env: process.env,
+			});
+			const out = ((r.stdout ?? "") + "\n" + (r.stderr ?? "")).slice(0, 2000);
+			if (r.status === 0) return { allow: true, reason: "" };
+			const m = /refuse: ([^\n]+)/.exec(r.stdout ?? "");
+			return { allow: false, reason: m?.[1]?.trim() ?? out.trim().slice(0, 500) ?? `exit ${r.status}` };
+		} catch (e) {
+			return { allow: false, reason: `jev check failed to run (${String(e).slice(0, 200)}); fail-closed` };
+		}
+	}
+	// Scrub known secret VALUES (not names) from text, mirroring scrub().
+	// Values <8 chars skipped to avoid masking prose with short tokens.
+	function scrubValues(text: string): string {
+		let out = text;
+		for (const name of SECRET_ENV_NAMES) {
+			const v = process.env[name];
+			if (!v || v.length < 8) continue;
+			if (out.includes(v)) out = out.split(v).join(`[redacted:${name}]`);
+		}
+		return out;
+	}
 	// --- 1. Governed mode: block local task spawns, offer somp_task ---
 	if (governed) {
+		// --- 1b. Governed host-session gates (this TUI shell is UNSANDBOXED).
+		// bash: secret-path deny first (no key needed), then `somp jev check`
+		// (fail-closed: no TYPESAFE_API_KEY / timeout / spawn error = refuse).
+		// read/write/edit: secret-path deny only (JEV classifies bash; file
+		// tools need no classifier, just the path block).
 		pi.on("tool_call", async event => {
+			if (event.toolName === "bash") {
+				const input = event.input;
+				const cmd =
+					input && typeof input === "object" && "command" in input && typeof input.command === "string"
+						? input.command
+						: "";
+				const cwd =
+					input && typeof input === "object" && "cwd" in input && typeof input.cwd === "string"
+						? input.cwd
+						: "";
+				const hit = secretHit(cmd) ?? secretHit(cwd);
+				if (hit) return { block: true, reason: `${SECRET_REFUSAL} (matched ${JSON.stringify(hit)})` };
+				const v = jevCheck(cmd);
+				if (!v.allow) {
+					return {
+						block: true,
+						reason:
+							`sOMP governed mode: host bash refused by JEV gate (${v.reason}). ` +
+							"Run it inside a disposable microVM via somp_task instead. " +
+							"If the command is genuinely safe, the operator can run it themselves or provision TYPESAFE_API_KEY + `somp jev on`.",
+					};
+				}
+				return undefined;
+			}
+			// read/write/edit/grep/glob: secret-path deny on the `path`
+			// argument (the fs scope). grep PATTERNS are not blocked — a
+			// pattern like "api-key" over repo code is legitimate recon;
+			// only scoping the search AT a secret dir/file is refused.
+			if (
+				event.toolName === "read" ||
+				event.toolName === "write" ||
+				event.toolName === "edit" ||
+				event.toolName === "grep" ||
+				event.toolName === "glob"
+			) {
+				const input = event.input;
+				const p =
+					input && typeof input === "object" && "path" in input && typeof input.path === "string"
+						? input.path
+						: "";
+				const hit = secretHit(p);
+				if (hit) return { block: true, reason: `${SECRET_REFUSAL} (matched ${JSON.stringify(hit)})` };
+				return undefined;
+			}
 			if (event.toolName !== "task") return undefined;
 			return {
 				block: true,
@@ -112,7 +235,26 @@ if (governed) {
 					"If somp_task is unavailable, stop and tell the operator.",
 			};
 		});
-
+		// --- 1c. Scrub secret VALUES from tool results before the model
+		// sees them (defense in depth: a pasted key in bash output / a read
+		// that slipped through must not enter context). Names untouched —
+		// only values ≥8 chars from this process's env.
+		pi.on("tool_result", async event => {
+			const content = event.content;
+			if (!Array.isArray(content)) return undefined;
+			let changed = false;
+			const next = content.map(block => {
+				if (block.type !== "text") return block;
+				const text = block.text;
+				if (typeof text !== "string") return block;
+				const scrubbed = scrubValues(text);
+				if (scrubbed === text) return block;
+				changed = true;
+				return { ...block, text: scrubbed };
+			});
+			if (!changed) return undefined;
+			return { content: next };
+		});
 		pi.registerTool({
 			name: "somp_task",
 			label: "sOMP governed subagent",
@@ -129,6 +271,21 @@ if (governed) {
 					.optional()
 					.describe("Host paths to stage into the guest workspace"),
 				timeout_s: z.number().optional().describe("Guest exec timeout seconds (default 600)"),
+				image: z
+					.string()
+					.optional()
+					.describe(
+						"Guest image for this dispatch only (default: config session.image). " +
+							"On KVM-less hosts the baked somp-guest image is not pullable — pass a Docker image (e.g. alpine:3.21) for standard-level runs.",
+					),
+				command: z
+					.array(z.string())
+					.optional()
+					.describe(
+						"Argv to run in the guest instead of the default srt-wrapped task runner. " +
+							"Required on plain images without /opt/somp/bin/srt (else exit 127). " +
+							"Classified by the JEV gate before any VM is created (fail-closed).",
+					),
 			}),
 			async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
 				const bin = SOMP_PATH;
@@ -146,6 +303,14 @@ if (governed) {
 					}
 					if (params.timeout_s !== undefined) {
 						args.push("--timeout-s", String(params.timeout_s));
+					}
+					if (typeof params.image === "string" && params.image.length > 0) {
+						args.push("--image", params.image);
+					}
+					if (Array.isArray(params.command)) {
+						for (const c of params.command) {
+							if (typeof c === "string") args.push("--command", c);
+						}
 					}
 					const started = Date.now();
 					const r = spawnSync(bin, args, {
@@ -260,6 +425,8 @@ pi.registerCommand("somp-status", {
 		const lines = [
 			`somp-ext: governed=${governed} srt=${srtWrap}`,
 			`sandbox protection level: ${levelBadge(cur.level)} (${cur.level}) — ${cur.source}`,
+			`session: HOST SHELL (unsandboxed) — level governs future dispatches (somp_task), not this TUI`,
+			`host gates: bash→JEV classifier (fail-closed) + secret-path deny; read/write/edit/grep/glob→secret-path deny; results→secret-value scrub`,
 			`/dev/kvm here: ${kvm} (guest tier evidence; worker tier is authoritative)`,
 			`somp bin: ${SOMP_PATH}`,
 			`srt settings: ${SRT_SETTINGS_PATH}${existsSync(SRT_SETTINGS_PATH) ? "" : " (MISSING)"}`,
@@ -292,8 +459,8 @@ pi.registerCommand("somp-status", {
 				return;
 			}
 			cur = { level: want, source: "somp config (set via /somp-level)" };
-			if (ctx.hasUI) ctx.ui.setStatus("somp-level", `sandbox ${levelBadge(want)}`);
-			say(ctx, `sandbox protection level → ${levelBadge(want)} (${want})`);
+			if (ctx.hasUI) ctx.ui.setStatus("somp-level", `sandbox ◆ ${levelBadge(want)} — host shell; ${SESSION_NOTE}`);
+			say(ctx, `sandbox protection level → ${levelBadge(want)} (${want}) — future dispatches; this TUI shell stays host`);
 		},
 	});
 	pi.registerCommand("somp-model", {

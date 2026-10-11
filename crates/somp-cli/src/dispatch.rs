@@ -24,6 +24,15 @@ pub struct DispatchArgs {
     pub mem: u32,
     #[arg(long, default_value_t = 600)]
     pub timeout_s: u64,
+    /// Override the guest image for this dispatch only (default: config
+    /// session.image, fail-closed `somp-guest`). Needed on hosts where the
+    /// baked guest image isn't pullable (e.g. Firecracker-only ext4 on a
+    /// KVM-less box): pass a Docker-pullable image for standard-level runs.
+    /// The srt-baked default command still runs — on a plain image without
+    /// /opt/somp/bin/srt it exits 127 (honest, observed), so prefer images
+    /// with srt or pass --command.
+    #[arg(long)]
+    pub image: Option<String>,
 }
 
 pub struct DispatchOutput {
@@ -105,7 +114,10 @@ pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput
     }
     let t0 = Instant::now();
     let client = cfg.aiec_client()?;
-    let req = cfg.subagent_create_request(args.cpus, args.mem, args.timeout_s)?;
+    let mut req = cfg.subagent_create_request(args.cpus, args.mem, args.timeout_s)?;
+    if let Some(image) = args.image.as_deref() {
+        req["image"] = serde_json::Value::String(image.to_owned());
+    }
     let sb = client
         .create_sandbox_with_runtime(&req, runtime)
         .await
