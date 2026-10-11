@@ -173,7 +173,8 @@ if (governed) {
 			t.startsWith("ws://") ||
 			t.startsWith("wss://") ||
 			t.startsWith("ftp://") ||
-			t.startsWith("file://")
+			t.startsWith("file://") ||
+			t.startsWith("ssh://")
 		);
 	}
 	// --- 1a3. Filesystem scope: the agent works in ONE workspace root.
@@ -193,25 +194,29 @@ if (governed) {
 		const t = p.trim();
 		if (t.length === 0) return true;
 		// Tool-internal URIs (local://, skill://, history://, …) are not
-		// host-fs access — allowed. Anything else with "://" is treated as
-		// a host path (e.g. file://) and scoped below.
-		if (/^(local|skill|history|artifact|agent|proc|cfg|ssh|issue|pr|mcp|omp|xd):\/\//.test(t)) return true;
+		// host-fs access — allowed. ANY other "://" scheme (ssh://, file://,
+		// unknown) is refused here too — the read-URL gate is the first wall,
+		// this is the second (so grep/glob/write can never take a URL path).
+		if (/^(local|skill|history|artifact|agent|proc|cfg|issue|pr|mcp|omp|xd):\/\//.test(t)) return true;
+		if (t.includes("://")) return false;
 		if (t === "~" || t.startsWith("~/") || t.startsWith("$HOME") || t.startsWith("%USERPROFILE%")) return false;
-		if (WORKSPACE_ROOT === "/") return t.startsWith("/"); // operator launched from /: any absolute path is in scope
-		if (t.startsWith("/")) {
-			return t === WORKSPACE_ROOT || t.startsWith(`${WORKSPACE_ROOT}/`);
-		}
-		// Relative path: resolve against the workspace root; ".." escapes
-		// that leave the root are refused.
+		// Normalize EVERY path (absolute AND relative): split, resolve "."
+		// and ".." lexically. Absolute "/tmp/../etc/passwd" normalizes to
+		// "/etc/passwd" — the breakout the old string-prefix check missed.
+		// Escapes above "/" refuse; result must equal the root or sit under
+		// root + "/".
+		const abs = t.startsWith("/") ? t : `${WORKSPACE_ROOT}/${t}`;
 		const parts: string[] = [];
-		for (const seg of `${WORKSPACE_ROOT}/${t}`.split("/")) {
+		for (const seg of abs.split("/")) {
 			if (seg === "" || seg === ".") continue;
 			if (seg === "..") {
 				if (parts.length === 0) return false;
 				parts.pop();
 			} else parts.push(seg);
 		}
-		return `/${parts.join("/")}`.startsWith(WORKSPACE_ROOT);
+		const norm = `/${parts.join("/")}`;
+		if (WORKSPACE_ROOT === "/") return true; // operator launched from /: whole fs is the workspace
+		return norm === WORKSPACE_ROOT || norm.startsWith(`${WORKSPACE_ROOT}/`);
 	}
 	const SCOPE_REFUSAL = `sOMP governed mode: host filesystem is scoped to the session workspace (${WORKSPACE_ROOT}). Paths outside it (home tree, /tmp, /etc, absolute strays) are refused. Work with files inside the workspace, or stage them into a microVM via somp_task params.files.`;
 	// Extract EVERY fs-scope argument across tools: `path`

@@ -356,6 +356,35 @@
 - somp now points at local plane: `base_url https://127.0.0.1:18444`,
   `~/.config/aiec/api-key` = local key (NUC key in `api-key.nuc-era-bak`),
   CA `~/.config/aiec/ca-somp-local.pem` via `AIEC_TLS_CA_CERT`.
-- UNPROVEN: strict (no firecracker/KVM here), JEV live (no TYPESAFE key),
-  stuck `destroying` row cleanup, multi-sandbox concurrency, restart
-  persistence (manual `nohup` — no systemd unit yet).
+	- UNPROVEN: strict (no firecracker/KVM here), JEV live (no TYPESAFE key),
+	  stuck `destroying` row cleanup, multi-sandbox concurrency, restart
+	  persistence (manual `nohup` — no systemd unit yet).
+	## Host-scope traversal breakout + fix (2026-10-11, operator pentest)
+	- Breakout (agent transcript `local://paste-4.md`): `read
+	  /tmp/../etc/passwd` returned FULL host `/etc/passwd` (usernames incl
+	  `gobrowse:1000`, `orlando:1001`, service accounts). Root cause:
+	  `inWorkspace` string-prefix-checked absolute paths, resolving `..`
+	  only for relative ones. `read /etc/passwd`, `find /`, `grep
+	  /etc/passwd`, `glob ..`, `write ../canary` all held; eval/ssh held
+	  (no listener). `ssh://` device never reached the scope gate at all.
+	- Fix (`64262b0` follow-up, unpushed at write time): normalize EVERY path
+	  lexically (`.`/`..` resolved, escapes above `/` refuse), unknown
+	  `://` schemes refused in scope (second wall behind the read-URL gate),
+	  `ssh://` added to `isUrlLike` (read gate refuses as egress). `file://`
+	  now scoped, not passed through. 13-case harness ALL PASS (incl the
+	  exact breakout string); live probes: `/tmp/../etc/passwd` refused
+	  (scope), `ssh://localhost/etc/passwd` refused (egress).
+	- Honest residue: the TUI shell is still the operator's own unsandboxed
+	  process — gates are policy enforced in `tool_call`, not a sandbox.
+	  Symlink escapes (`/tmp/link -> /etc` + `read /tmp/link/passwd`) NOT
+	  covered: lexical normalization cannot see through symlinks; a
+	  `realpath` check at gate time would close it (open).
+	
+	## JEV openrouter backend LIVE both directions (2026-10-11, operator key)
+	- `somp jev check "echo hello-jevtrial"` → classifier 200, `p=0.000
+	  confidence=1.00 verdict=allow`, exit 0 (model
+	  `mistralai/mistral-large-4-0`, `openrouter/` prefix stripped).
+	- `somp jev check "rm -rf ~/Documents"` → `p=0.990 confidence=0.99
+	  verdict=refuse`, exit 1 (`p(destructive)=0.990 > 0.15`). First live
+	  model-verdict refuse (earlier refuses were fail-closed decode errors;
+	  fixed via raw-bytes + lossy decode + header diagnostics in `ff74229`).
