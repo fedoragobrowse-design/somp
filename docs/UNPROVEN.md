@@ -454,3 +454,33 @@
 	  logging. None of that exists yet — recorded, not built. The
 	  `jev.enabled: false` vs enforcing-gate mismatch in
 	  somp-config-preproof.yaml is still unreconciled (see prior entry).
+	
+	## Host-bash allowlist: default-deny + JEV checks the allowed (2026-10-11)
+	- Operator: restrict host commands to an allowlist of known-safe
+	  binaries; JEV still classifies what the list permits. Shipped:
+	  `HOST_ALLOWLIST` (~50 binaries: inspect/search text, workspace ops,
+	  cargo build-test-check, local-only git, our own CLIs, `env`) +
+	  `check_allowlist()` running FIRST in `gate()` (host path), before the
+	  net deny and before any classifier call — JEV never sees unvetted
+	  argv. Guest-bound commands (dispatch `--command`, session exec) route
+	  to `gate_for_guest()` (net deny + classifier, no allowlist — the
+	  guest exists to run toolchains).
+	- Shape rules: raw argv[0], NO wrapper stripping (timeout/sudo/sh/xargs
+	  absent → wrapper-laundering refuses naming the wrapper); `cargo run /
+	  install / publish / login / search` denied (exec/net); git remote
+	  subcmds denied (local-only git stays for the diff loop); `VAR=x cmd`
+	  skips to the real binary; `env` only with a non-empty allowlisted
+	  remainder (bare `env` dump refused); `>`/`>>` to any file refused
+	  (bypasses ext path scope — incl `2> file`), only `/dev/null` + `2>&1`
+	  pass; `->`/`=>`/`>=` non-fires preserved.
+	- Live (keyless): `python3 script.py` → `refuse: not on the host-bash
+	  allowlist` exit 1; `openssl s_client …` → same; vetted `ls /tmp` →
+	  passes allowlist, reaches classifier (`OPENROUTER_API_KEY unset`
+	  fail-closed — the "JEV checks the allowed" half). Tests 46/46,
+	  clippy 0.
+	- Residue unchanged: allowlist is names, not containment —
+	  `VAR=x` recursion and `env` remainder are re-checked, but shell
+	  arithmetic/`$()` cannot smuggle a binary past argv[0] matching
+	  (only allowlisted binaries execute; their FLAGS are still JEV's job
+	  — e.g. `sed`/`awk` programs, `git` paths). Netns still the durable
+	  fix for the network class.

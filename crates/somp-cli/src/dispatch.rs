@@ -56,8 +56,10 @@ pub async fn run(cfg: &Config, args: DispatchArgs) -> Result<()> {
     // Scrub the serialized diff, then parse back to a Value so consumers see
     // the same shape as the server returned (a secret exfiltrated into a
     // result file would otherwise leak via git_diff).
-    let diff_scrubbed = crate::secrets::scrub(&serde_json::to_string(&out.diff).unwrap_or_default());
-    let diff: serde_json::Value = serde_json::from_str(&diff_scrubbed).unwrap_or(serde_json::Value::Null);
+    let diff_scrubbed =
+        crate::secrets::scrub(&serde_json::to_string(&out.diff).unwrap_or_default());
+    let diff: serde_json::Value =
+        serde_json::from_str(&diff_scrubbed).unwrap_or(serde_json::Value::Null);
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -109,8 +111,10 @@ pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput
     crate::secrets::deny_secret_paths_in_dispatch(&task_text, &args.command, &args.file)?;
     // JEV gate BEFORE creating any VM: an unclassified custom command must
     // never cost a sandbox (fail-closed ordering: deny → classify → create).
+    // Guest scope: the command runs inside the throwaway VM, so the host
+    // allowlist does not apply — net deny + classifier still do.
     if !args.command.is_empty() {
-        crate::jev_gate::gate(&args.command.join(" "), &cfg.jev).await?;
+        crate::jev_gate::gate_for_guest(&args.command.join(" "), &cfg.jev).await?;
     }
     let t0 = Instant::now();
     let client = cfg.aiec_client()?;
@@ -134,7 +138,12 @@ pub async fn dispatch(cfg: &Config, args: DispatchArgs) -> Result<DispatchOutput
         eprintln!("warning: subagent VM destroy failed ({}): {:#}", sb.id, e);
     }
     let inner = result?;
-    destroy.with_context(|| format!("subagent VM {} task ok but destroy failed (orphan risk)", sb.id))?;
+    destroy.with_context(|| {
+        format!(
+            "subagent VM {} task ok but destroy failed (orphan risk)",
+            sb.id
+        )
+    })?;
     Ok(DispatchOutput {
         sandbox_id: sb.id.to_string(),
         start_ms,
@@ -184,14 +193,18 @@ async fn dispatch_inner(
         // names never contain '=' but host paths may (temp dirs, query
         // strings). Reject '..': guest escapes REPO and the server diff
         // (hardcoded to /workspace/repository) would silently miss the file.
-        let (guest, host) = spec.split_once('=').with_context(|| format!("--file must be <guest>=<host>, got {spec:?}"))?;
+        let (guest, host) = spec
+            .split_once('=')
+            .with_context(|| format!("--file must be <guest>=<host>, got {spec:?}"))?;
         if guest.split('/').any(|c| c == "..") {
             anyhow::bail!("--file guest path must stay under /workspace/repository, got {guest:?}");
         }
         let guest = guest.strip_prefix("/workspace/").unwrap_or(guest);
         let guest = guest.strip_prefix('/').unwrap_or(guest);
         let bytes = std::fs::read(host).with_context(|| format!("read {host}"))?;
-        client.put_file(id, &format!("{REPO}/{guest}"), &bytes).await?;
+        client
+            .put_file(id, &format!("{REPO}/{guest}"), &bytes)
+            .await?;
     }
     // Baseline-commit staged inputs (TASK.md + --file set) so the post-exec
     // diff contains only what the guest task produced. Identity via -c flags:
@@ -226,7 +239,9 @@ async fn dispatch_inner(
     } else {
         // Already classified in dispatch() before VM create; Guard boundary
         // still applies. Loud on purpose — silence here would be fail-open.
-        eprintln!("warning: custom --command runs WITHOUT the srt wrapper (Guard boundary still applies)");
+        eprintln!(
+            "warning: custom --command runs WITHOUT the srt wrapper (Guard boundary still applies)"
+        );
         args.command.clone()
     };
     let r = client
@@ -306,7 +321,10 @@ mod tests {
     #[test]
     fn file_spec_dotdot_rejected() {
         for bad in ["../evil.sh", "a/../../evil.sh", "/workspace/../evil.sh"] {
-            assert!(bad.split('/').any(|c| c == ".."), "{bad:?} must trip the '..' component check");
+            assert!(
+                bad.split('/').any(|c| c == ".."),
+                "{bad:?} must trip the '..' component check"
+            );
         }
         for good in ["ctx.md", "sub/dir/a.txt", "/workspace/repository/a.txt"] {
             assert!(!good.split('/').any(|c| c == ".."), "{good:?} must pass");

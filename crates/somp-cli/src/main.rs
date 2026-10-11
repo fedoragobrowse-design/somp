@@ -7,8 +7,8 @@ mod aiec;
 mod bench;
 mod config;
 mod dispatch;
-mod secrets;
 mod jev_gate;
+mod secrets;
 mod tier;
 
 use anyhow::{bail, Context, Result};
@@ -110,30 +110,30 @@ enum ModelOp {
     /// Apply a named preset: `muse-spark` → opencode.ai:443.
     Preset { name: String },
 }
-	#[derive(Subcommand)]
-	enum JevOp {
-	    /// Show JEV status: enabled, model, threshold, key presence (name only).
-	    Status,
-	    /// Enable the gate (needs key in env at exec time, per backend).
-	    On,
-	    /// Disable the gate — refuses unless --allow-ungoverned-bash is explicit.
-	    Off {
-	        #[arg(long)]
-	        allow_ungoverned_bash: bool,
-	    },
-	    /// Pin the classifier model (typesafe default jev-latest; for
-	    /// backend=openrouter pin a real OpenRouter model id instead).
-	    Model { name: String },
-	    /// Switch classifier backend: typesafe (System One, default) or
-	    /// openrouter (chat completion, key OPENROUTER_API_KEY).
-	    Backend { name: String },
-	    /// Set the p(destructive) refuse threshold (default 0.15).
-	    Threshold { value: f64 },
-	    /// Classify one command and exit 0 (allow) / 1 (refuse). Machine-readable:
-	    /// prints `allow` or `refuse: <reason>` on stdout. For the governed TUI
-	    /// extension, which shells out per bash call (fail-closed on spawn error).
-	    Check { command: Vec<String> },
-	}
+#[derive(Subcommand)]
+enum JevOp {
+    /// Show JEV status: enabled, model, threshold, key presence (name only).
+    Status,
+    /// Enable the gate (needs key in env at exec time, per backend).
+    On,
+    /// Disable the gate — refuses unless --allow-ungoverned-bash is explicit.
+    Off {
+        #[arg(long)]
+        allow_ungoverned_bash: bool,
+    },
+    /// Pin the classifier model (typesafe default jev-latest; for
+    /// backend=openrouter pin a real OpenRouter model id instead).
+    Model { name: String },
+    /// Switch classifier backend: typesafe (System One, default) or
+    /// openrouter (chat completion, key OPENROUTER_API_KEY).
+    Backend { name: String },
+    /// Set the p(destructive) refuse threshold (default 0.15).
+    Threshold { value: f64 },
+    /// Classify one command and exit 0 (allow) / 1 (refuse). Machine-readable:
+    /// prints `allow` or `refuse: <reason>` on stdout. For the governed TUI
+    /// extension, which shells out per bash call (fail-closed on spawn error).
+    Check { command: Vec<String> },
+}
 #[derive(Subcommand)]
 enum PolicyOp {
     /// Submit a Guard widening proposal (agent proposes; human approves out-of-band
@@ -179,7 +179,10 @@ async fn main() -> Result<()> {
         Cmd::Level { level } => level_cmd(cfg, level),
         Cmd::Model { op } => model_cmd(cfg, op),
         Cmd::Jev { op } => jev_cmd(cfg, op),
-        Cmd::Update { check, allow_foreign_origin } => update_cmd(check, allow_foreign_origin),
+        Cmd::Update {
+            check,
+            allow_foreign_origin,
+        } => update_cmd(check, allow_foreign_origin),
         Cmd::Session { op } => session(cfg, op).await,
         Cmd::Dispatch(args) => dispatch::run(&cfg, args).await,
         Cmd::Policy { op } => policy(cfg, op).await,
@@ -228,7 +231,9 @@ fn ensure_local_ca() {
 }
 
 fn dirs_home_ca() -> std::path::PathBuf {
-    let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/root"));
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/root"));
     home.join(".config/aiec/ca.pem")
 }
 
@@ -256,11 +261,26 @@ fn somp_repo_dir() -> Result<std::path::PathBuf> {
 fn update_cmd(check: bool, allow_foreign_origin: bool) -> Result<()> {
     let repo = somp_repo_dir()?;
     let remote = String::from_utf8(
-        std::process::Command::new("git").args(["-C"]).arg(&repo).args(["remote", "get-url", "origin"])
-            .output().context("git remote get-url")?.stdout,
-    ).unwrap_or_default().trim().to_string();
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&repo)
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .context("git remote get-url")?
+            .stdout,
+    )
+    .unwrap_or_default()
+    .trim()
+    .to_string();
     println!("somp repo: {}", repo.display());
-    println!("origin:    {}", if remote.is_empty() { "(unset)" } else { &remote });
+    println!(
+        "origin:    {}",
+        if remote.is_empty() {
+            "(unset)"
+        } else {
+            &remote
+        }
+    );
     // Exact-match origin gate: only fedoragobrowse-design/somp (https + ssh
     // forms) is trusted to rebuild the governed binary. A substring check
     // would let github.com/evil/somp.git pass — fail-closed on everything
@@ -269,11 +289,17 @@ fn update_cmd(check: bool, allow_foreign_origin: bool) -> Result<()> {
         bail!("refusing update: origin {remote:?} is not YOUR somp repo ({FALLBACK_REPO}) — pulling foreign code would rebuild the governed binary from it. Pass --allow-foreign-origin to override explicitly");
     }
     if allow_foreign_origin {
-        println!("note: --allow-foreign-origin given; trusting configured origin (operator override)");
+        println!(
+            "note: --allow-foreign-origin given; trusting configured origin (operator override)"
+        );
     }
     // Fetch first: --check reports without mutating the working tree.
-    let st = std::process::Command::new("git").args(["-C"]).arg(&repo)
-        .args(["fetch", "origin"]).status().context("git fetch")?;
+    let st = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(&repo)
+        .args(["fetch", "origin"])
+        .status()
+        .context("git fetch")?;
     if !st.success() {
         bail!("git fetch origin failed in {}", repo.display());
     }
@@ -287,7 +313,12 @@ fn update_cmd(check: bool, allow_foreign_origin: bool) -> Result<()> {
         println!("already up to date ({})", &local[..12.min(local.len())]);
         return Ok(());
     }
-    println!("behind: local {} -> {} {}", &local[..12.min(local.len())], upstream_ref, &upstream[..12.min(upstream.len())]);
+    println!(
+        "behind: local {} -> {} {}",
+        &local[..12.min(local.len())],
+        upstream_ref,
+        &upstream[..12.min(upstream.len())]
+    );
     if check {
         println!("--check: not pulling. Run `somp update` to pull + rebuild + reinstall.");
         return Ok(());
@@ -295,14 +326,21 @@ fn update_cmd(check: bool, allow_foreign_origin: bool) -> Result<()> {
     // Pull the CURRENT branch from its tracking upstream — never a hardcoded
     // `origin main` (breaks checkouts on other branches).
     let branch = current_branch(&repo)?;
-    let st = std::process::Command::new("git").args(["-C"]).arg(&repo)
-        .args(["pull", "--ff-only"]).status().context("git pull")?;
+    let st = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(&repo)
+        .args(["pull", "--ff-only"])
+        .status()
+        .context("git pull")?;
     if !st.success() {
         bail!("git pull --ff-only failed on branch {branch:?} (local changes? stash first, then `somp update`)");
     }
     println!("== rebuild + reinstall ==");
     let installer = repo.join("install.sh");
-    let st = std::process::Command::new("sh").arg(&installer).status().context("run install.sh")?;
+    let st = std::process::Command::new("sh")
+        .arg(&installer)
+        .status()
+        .context("run install.sh")?;
     if !st.success() {
         bail!("install.sh failed after pull");
     }
@@ -311,12 +349,19 @@ fn update_cmd(check: bool, allow_foreign_origin: bool) -> Result<()> {
 }
 
 fn git_rev(repo: &std::path::Path, rev: &str) -> Result<String> {
-    let out = std::process::Command::new("git").args(["-C"]).arg(repo)
-        .args(["rev-parse", rev]).output().context("git rev-parse")?;
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(["rev-parse", rev])
+        .output()
+        .context("git rev-parse")?;
     if !out.status.success() {
         bail!("git rev-parse {rev} failed (no upstream tracking branch? `git branch --set-upstream-to=origin/main`)");
     }
-    Ok(String::from_utf8(out.stdout).unwrap_or_default().trim().to_string())
+    Ok(String::from_utf8(out.stdout)
+        .unwrap_or_default()
+        .trim()
+        .to_string())
 }
 
 /// Only fedoragobrowse-design/somp, https and ssh forms. Exact match on the
@@ -334,27 +379,53 @@ fn is_trusted_origin(remote: &str) -> bool {
 /// Symbolic name of the current branch's tracking upstream (e.g.
 /// `origin/main`), or None when unconfigured.
 fn tracking_branch(repo: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git").args(["-C"]).arg(repo)
-        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).output().ok()?;
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
-    let s = String::from_utf8(out.stdout).unwrap_or_default().trim().to_string();
-    if s.is_empty() || s == "@{u}" { None } else { Some(s) }
+    let s = String::from_utf8(out.stdout)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if s.is_empty() || s == "@{u}" {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// Short name of the checked-out branch (for error messages only).
 fn current_branch(repo: &std::path::Path) -> Result<String> {
-    let out = std::process::Command::new("git").args(["-C"]).arg(repo)
-        .args(["branch", "--show-current"]).output().context("git branch --show-current")?;
-    Ok(String::from_utf8(out.stdout).unwrap_or_default().trim().to_string())
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(["branch", "--show-current"])
+        .output()
+        .context("git branch --show-current")?;
+    Ok(String::from_utf8(out.stdout)
+        .unwrap_or_default()
+        .trim()
+        .to_string())
 }
 fn level_cmd(cfg: config::Config, level: Option<String>) -> Result<()> {
     match level {
         None => {
             let eff = config::SecurityLevel::effective(cfg.security.level)?;
-            let src = if std::env::var("SOMP_LEVEL").is_ok() { "SOMP_LEVEL env" } else { "config file" };
-            println!("sandbox protection level: {} ({})", eff.badge(), eff.describe());
+            let src = if std::env::var("SOMP_LEVEL").is_ok() {
+                "SOMP_LEVEL env"
+            } else {
+                "config file"
+            };
+            println!(
+                "sandbox protection level: {} ({})",
+                eff.badge(),
+                eff.describe()
+            );
             println!("source: {src}");
             Ok(())
         }
@@ -424,24 +495,44 @@ fn model_cmd(cfg: config::Config, op: ModelOp) -> Result<()> {
             if port == 0 {
                 bail!("port 0 is not a valid model endpoint");
             }
-            config_set(&["guard", "model_host"], serde_yaml::Value::String(host.clone()))?;
-            config_set(&["guard", "model_port"], serde_yaml::Value::Number(port.into()))?;
+            config_set(
+                &["guard", "model_host"],
+                serde_yaml::Value::String(host.clone()),
+            )?;
+            config_set(
+                &["guard", "model_port"],
+                serde_yaml::Value::Number(port.into()),
+            )?;
             println!("guard model endpoint set to {host}:{port}");
             Ok(())
         }
         ModelOp::Preset { name } => {
             match name.to_lowercase().as_str() {
                 "muse-spark" => {
-                    config_set(&["guard", "model_host"], serde_yaml::Value::String("opencode.ai".into()))?;
-                    config_set(&["guard", "model_port"], serde_yaml::Value::Number(443.into()))?;
+                    config_set(
+                        &["guard", "model_host"],
+                        serde_yaml::Value::String("opencode.ai".into()),
+                    )?;
+                    config_set(
+                        &["guard", "model_port"],
+                        serde_yaml::Value::Number(443.into()),
+                    )?;
                     // omp wire for opencode-go is X-Api-Key (never bearer:
                     // providers/anthropic.ts drops Authorization, #6510), and
                     // the responses API lives under /zen/go/v1, so the guest
                     // must address .../model/model-main/zen/go/v1 as its base.
-                    config_set(&["guard", "model_credential_header"], serde_yaml::Value::String("x-api-key".into()))?;
-                    config_set(&["guard", "model_path"], serde_yaml::Value::String("/zen/go/v1/".into()))?;
+                    config_set(
+                        &["guard", "model_credential_header"],
+                        serde_yaml::Value::String("x-api-key".into()),
+                    )?;
+                    config_set(
+                        &["guard", "model_path"],
+                        serde_yaml::Value::String("/zen/go/v1/".into()),
+                    )?;
                     println!("guard model endpoint ← muse-spark preset: opencode.ai:443 (header x-api-key, path /zen/go/v1/)");
-                    println!("(catalog baseUrl https://opencode.ai/zen/go/v1, openai-responses API)");
+                    println!(
+                        "(catalog baseUrl https://opencode.ai/zen/go/v1, openai-responses API)"
+                    );
                     Ok(())
                 }
                 other => bail!("unknown preset {other:?}: want muse-spark"),
@@ -452,59 +543,86 @@ fn model_cmd(cfg: config::Config, op: ModelOp) -> Result<()> {
 /// JEV gate management. Key presence is name-only (never print bytes).
 fn jev_cmd(cfg: config::Config, op: JevOp) -> Result<()> {
     match op {
-	        JevOp::Status => {
-	            let key = match cfg.jev.backend.trim().to_lowercase().as_str() {
-	                "openrouter" => match std::env::var("OPENROUTER_API_KEY") {
-	                    Ok(k) if !k.trim().is_empty() => "OPENROUTER_API_KEY: set (bytes hidden)",
-	                    _ => "OPENROUTER_API_KEY: MISSING — gate will refuse until exported",
-	                },
-	                _ => match std::env::var("TYPESAFE_API_KEY") {
-	                    Ok(k) if !k.trim().is_empty() => "TYPESAFE_API_KEY: set (bytes hidden)",
-	                    _ => "TYPESAFE_API_KEY: MISSING — gate will refuse until exported",
-	                },
-	            };
-	            println!("jev gate: {} (backend {}, model {}, threshold {})", if cfg.jev.enabled { "ON" } else { "OFF" }, cfg.jev.backend, cfg.jev.model, cfg.jev.threshold);
-	            println!("{key}");
-	            println!("unguarded-bash escape hatch: {}", if cfg.jev.allow_ungoverned_bash { "ALLOWED (explicit)" } else { "denied (default)" });
-	            Ok(())
-	        }
-	        JevOp::On => {
-	            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(true))?;
-	            println!("jev gate enabled (needs key in env at exec time: TYPESAFE_API_KEY for typesafe, OPENROUTER_API_KEY for openrouter)");
-	            Ok(())
-	        }
-	        JevOp::Off { allow_ungoverned_bash } => {
-	            if !allow_ungoverned_bash {
-	                bail!("refusing: `somp jev off` without --allow-ungoverned-bash would silently unguard bash — pass the flag explicitly to own it");
-	            }
-	            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(false))?;
-	            config_set(&["jev", "allow_ungoverned_bash"], serde_yaml::Value::Bool(true))?;
-	            println!("jev gate disabled WITH explicit unguarded-bash audit flag");
-	            Ok(())
-	        }
-	        JevOp::Model { name } => {
-	            config_set(&["jev", "model"], serde_yaml::Value::String(name.clone()))?;
-	            println!("jev model pinned to {name}");
-	            Ok(())
-	        }
-	        JevOp::Backend { name } => {
-	            let b = name.trim().to_lowercase();
-	            if b != "typesafe" && b != "openrouter" {
-	                bail!("unknown backend {name:?}: want typesafe|openrouter");
-	            }
-	            config_set(&["jev", "backend"], serde_yaml::Value::String(b.clone()))?;
-	            println!("jev backend set to {b} (key: {} at exec time)",
-	                if b == "openrouter" { "OPENROUTER_API_KEY" } else { "TYPESAFE_API_KEY" });
-	            Ok(())
-	        }
-	        JevOp::Threshold { value } => {
-	            if !(0.0..=1.0).contains(&value) {
-	                bail!("threshold must be 0.0..=1.0, got {value}");
-	            }
-	            config_set(&["jev", "threshold"], serde_yaml::Value::Number(serde_yaml::Number::from(value)))?;
-	            println!("jev threshold set to {value}");
-	            Ok(())
-	        }
+        JevOp::Status => {
+            let key = match cfg.jev.backend.trim().to_lowercase().as_str() {
+                "openrouter" => match std::env::var("OPENROUTER_API_KEY") {
+                    Ok(k) if !k.trim().is_empty() => "OPENROUTER_API_KEY: set (bytes hidden)",
+                    _ => "OPENROUTER_API_KEY: MISSING — gate will refuse until exported",
+                },
+                _ => match std::env::var("TYPESAFE_API_KEY") {
+                    Ok(k) if !k.trim().is_empty() => "TYPESAFE_API_KEY: set (bytes hidden)",
+                    _ => "TYPESAFE_API_KEY: MISSING — gate will refuse until exported",
+                },
+            };
+            println!(
+                "jev gate: {} (backend {}, model {}, threshold {})",
+                if cfg.jev.enabled { "ON" } else { "OFF" },
+                cfg.jev.backend,
+                cfg.jev.model,
+                cfg.jev.threshold
+            );
+            println!("{key}");
+            println!(
+                "unguarded-bash escape hatch: {}",
+                if cfg.jev.allow_ungoverned_bash {
+                    "ALLOWED (explicit)"
+                } else {
+                    "denied (default)"
+                }
+            );
+            Ok(())
+        }
+        JevOp::On => {
+            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(true))?;
+            println!("jev gate enabled (needs key in env at exec time: TYPESAFE_API_KEY for typesafe, OPENROUTER_API_KEY for openrouter)");
+            Ok(())
+        }
+        JevOp::Off {
+            allow_ungoverned_bash,
+        } => {
+            if !allow_ungoverned_bash {
+                bail!("refusing: `somp jev off` without --allow-ungoverned-bash would silently unguard bash — pass the flag explicitly to own it");
+            }
+            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(false))?;
+            config_set(
+                &["jev", "allow_ungoverned_bash"],
+                serde_yaml::Value::Bool(true),
+            )?;
+            println!("jev gate disabled WITH explicit unguarded-bash audit flag");
+            Ok(())
+        }
+        JevOp::Model { name } => {
+            config_set(&["jev", "model"], serde_yaml::Value::String(name.clone()))?;
+            println!("jev model pinned to {name}");
+            Ok(())
+        }
+        JevOp::Backend { name } => {
+            let b = name.trim().to_lowercase();
+            if b != "typesafe" && b != "openrouter" {
+                bail!("unknown backend {name:?}: want typesafe|openrouter");
+            }
+            config_set(&["jev", "backend"], serde_yaml::Value::String(b.clone()))?;
+            println!(
+                "jev backend set to {b} (key: {} at exec time)",
+                if b == "openrouter" {
+                    "OPENROUTER_API_KEY"
+                } else {
+                    "TYPESAFE_API_KEY"
+                }
+            );
+            Ok(())
+        }
+        JevOp::Threshold { value } => {
+            if !(0.0..=1.0).contains(&value) {
+                bail!("threshold must be 0.0..=1.0, got {value}");
+            }
+            config_set(
+                &["jev", "threshold"],
+                serde_yaml::Value::Number(serde_yaml::Number::from(value)),
+            )?;
+            println!("jev threshold set to {value}");
+            Ok(())
+        }
         JevOp::Check { command } => {
             if command.is_empty() {
                 bail!("nothing to check");
@@ -562,7 +680,10 @@ async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
             let st = config::session_state_load()?.context("no session (somp session up first)")?;
             // kind is the only server-accepted field; the CLI name is a local label.
             let snap: serde_json::Value = client.create_snapshot(st.id, None).await?;
-            println!("snapshot [{name}]: {}", serde_json::to_string_pretty(&snap)?);
+            println!(
+                "snapshot [{name}]: {}",
+                serde_json::to_string_pretty(&snap)?
+            );
             println!("restore with: somp session restore --snapshot <snapshot-id-from-above>");
             Ok(())
         }
@@ -592,8 +713,10 @@ async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
             }
             // Fail-closed ordering: deny → classify → touch session/plane.
             // An unclassified command never even reads session state.
+            // Guest scope: exec runs inside the session VM — host allowlist
+            // does not apply; net deny + classifier still do.
             crate::secrets::deny_secret_paths_in_dispatch("", &command, &[])?;
-            crate::jev_gate::gate(&command.join(" "), &cfg.jev).await?;
+            crate::jev_gate::gate_for_guest(&command.join(" "), &cfg.jev).await?;
             let st = config::session_state_load()?.context("no session (somp session up first)")?;
             let r = client.exec_command(st.id, command, None, 300).await?;
             // Same print boundary as dispatch: scrub before persisting to terminal.
@@ -627,7 +750,11 @@ async fn session(cfg: config::Config, op: SessionOp) -> Result<()> {
 async fn policy(cfg: config::Config, op: PolicyOp) -> Result<()> {
     let client = cfg.aiec_client()?;
     match op {
-        PolicyOp::Propose { sandbox, add_host, reason } => {
+        PolicyOp::Propose {
+            sandbox,
+            add_host,
+            reason,
+        } => {
             let id: uuid::Uuid = sandbox.parse().context("sandbox must be a UUID")?;
             // add_host entries are host or host:port; default port 443/tcp.
             // Methods/paths stay empty (opaque grant), so the summary MUST say
@@ -636,7 +763,10 @@ async fn policy(cfg: config::Config, op: PolicyOp) -> Result<()> {
             for h in &add_host {
                 // Bare IPv6 (`::1`) is ambiguous with host:port — require
                 // brackets. Anything else with >1 colon is refused, not guessed.
-                if h.contains(':') && !(h.starts_with('[') && h.contains("]:")) && h.matches(':').count() != 1 {
+                if h.contains(':')
+                    && !(h.starts_with('[') && h.contains("]:"))
+                    && h.matches(':').count() != 1
+                {
                     bail!("--add-host IPv6 must be [addr]:port, got {h:?}");
                 }
                 let (host, port) = match h.rsplit_once(':') {
@@ -645,7 +775,9 @@ async fn policy(cfg: config::Config, op: PolicyOp) -> Result<()> {
                     Some((host, p)) if h.matches(':').count() == 1 || h.contains("]:") => {
                         let host = host.strip_prefix('[').unwrap_or(host);
                         let (host, _) = host.split_once(']').unwrap_or((host, ""));
-                        let port: u16 = p.parse().with_context(|| format!("--add-host port must be 1-65535, got {p:?}"))?;
+                        let port: u16 = p.parse().with_context(|| {
+                            format!("--add-host port must be 1-65535, got {p:?}")
+                        })?;
                         if port == 0 {
                             bail!("--add-host port must be 1-65535, got {p:?}");
                         }
@@ -682,7 +814,9 @@ mod update_tests {
 
     #[test]
     fn upstream_origin_refused() {
-        assert!(!is_trusted_origin("https://github.com/can1357/oh-my-pi.git"));
+        assert!(!is_trusted_origin(
+            "https://github.com/can1357/oh-my-pi.git"
+        ));
         assert!(!is_trusted_origin("git@github.com:someone/oh-my-pi.git"));
         assert!(!is_trusted_origin("https://github.com/other/oh_my_pi.git"));
     }
@@ -693,21 +827,39 @@ mod update_tests {
         // exact-match gate must refuse them.
         assert!(!is_trusted_origin("https://github.com/evil/somp.git"));
         assert!(!is_trusted_origin("https://github.com/evil/somp-fork.git"));
-        assert!(!is_trusted_origin("https://github.com/someone/random-tool.git"));
-        assert!(!is_trusted_origin("https://github.com/fedoragobrowse-design/somp-evil.git"));
-        assert!(!is_trusted_origin("https://github.com/fedoragobrowse-design/evil-somp.git"));
+        assert!(!is_trusted_origin(
+            "https://github.com/someone/random-tool.git"
+        ));
+        assert!(!is_trusted_origin(
+            "https://github.com/fedoragobrowse-design/somp-evil.git"
+        ));
+        assert!(!is_trusted_origin(
+            "https://github.com/fedoragobrowse-design/evil-somp.git"
+        ));
         assert!(!is_trusted_origin(""));
     }
 
     #[test]
     fn own_repo_allowed_all_forms() {
-        assert!(is_trusted_origin("https://github.com/fedoragobrowse-design/somp.git"));
-        assert!(is_trusted_origin("https://github.com/fedoragobrowse-design/somp"));
-        assert!(is_trusted_origin("git@github.com:fedoragobrowse-design/somp.git"));
-        assert!(is_trusted_origin("git@github.com:fedoragobrowse-design/somp"));
-        assert!(is_trusted_origin("ssh://git@github.com/fedoragobrowse-design/somp.git"));
+        assert!(is_trusted_origin(
+            "https://github.com/fedoragobrowse-design/somp.git"
+        ));
+        assert!(is_trusted_origin(
+            "https://github.com/fedoragobrowse-design/somp"
+        ));
+        assert!(is_trusted_origin(
+            "git@github.com:fedoragobrowse-design/somp.git"
+        ));
+        assert!(is_trusted_origin(
+            "git@github.com:fedoragobrowse-design/somp"
+        ));
+        assert!(is_trusted_origin(
+            "ssh://git@github.com/fedoragobrowse-design/somp.git"
+        ));
         // Case-insensitive: git remotes vary in case.
-        assert!(is_trusted_origin("HTTPS://GITHUB.COM/FEDORAGOBROWSE-DESIGN/SOMP.GIT"));
+        assert!(is_trusted_origin(
+            "HTTPS://GITHUB.COM/FEDORAGOBROWSE-DESIGN/SOMP.GIT"
+        ));
     }
     #[test]
     fn check_arm_denies_secret_paths_pre_classifier() {
@@ -719,11 +871,8 @@ mod update_tests {
             &[],
         );
         assert!(denied.is_err());
-        let clean = crate::secrets::deny_secret_paths_in_dispatch(
-            "",
-            &["echo hello".to_owned()],
-            &[],
-        );
+        let clean =
+            crate::secrets::deny_secret_paths_in_dispatch("", &["echo hello".to_owned()], &[]);
         assert!(clean.is_ok());
     }
 }
