@@ -35,17 +35,64 @@ pub struct GateAnswer {
     pub confidence: f64,
 }
 
-/// Thresholds: Jev docs pin `confirm if p(destructive) > 0.15`.
-/// Pin model version in production (e.g. jev-1.13.0) so thresholds stay stable.
-pub const P_DESTRUCTIVE_THRESHOLD: f64 = 0.15;
-
+	/// Thresholds: Jev docs pin `confirm if p(destructive) > 0.15`.
+	/// Pin model version in production (e.g. jev-1.13.0) so thresholds stay stable.
+	pub const P_DESTRUCTIVE_THRESHOLD: f64 = 0.15;
+	
+	/// Deterministic network-command deny: runs BEFORE any classifier call.
+	/// Rationale: the destructive-probability question lets network egress
+	/// through (`curl https://…` is not destructive, so p≈0 → allow). Host
+	/// bash has no NIC policy to enforce — the governed stance is that host
+	/// shells do not touch the network at all; network work belongs in the
+	/// somp_task guest. A model verdict must never be able to allow what is
+	/// structurally refused, so this check is lexical, not classified.
+	/// Matches: URL literals (http/https/ws/ftp/ssh), well-known egress
+	/// binaries (curl/wget/ssh/nc/socat + common exfil aliases), and
+	/// `> /dev/tcp|udp/` redirections. Case-insensitive; matched token is
+	/// returned for the refusal message (token only, never command bytes).
+	pub fn deny_network_command(command: &str) -> Option<&'static str> {
+	    const URL_MARKERS: &[&str] = &[
+	        "http://", "https://", "ws://", "wss://", "ftp://", "ssh://",
+	    ];
+	    // Trailing space requires token-boundary: "nc" must not fire on "sync".
+	    const TOOL_MARKERS: &[&str] = &[
+	        "curl ", "wget ", "ssh ", "scp ", "sftp ", "ftp ", "nc ", "ncat ",
+	        "socat ", "telnet ", "rsync ", "rclone ", "aria2c ", "axel ",
+	        "httpx ", "http ", "wget2 ", "lftp ",
+	    ];
+	    const REDIR_MARKERS: &[&str] = &["/dev/tcp/", "/dev/udp/"];
+	    let lower = command.to_lowercase();
+	    for &m in URL_MARKERS {
+	        if lower.contains(m) {
+	            return Some(m.trim_end_matches("://"));
+	        }
+	    }
+	    // Tools match at command start or after a shell separator — `echo
+	    // curl` (the WORD curl in prose) must not fire, `curl …` must.
+	    for &m in TOOL_MARKERS {
+	        let name = m.trim_end();
+	        if lower.starts_with(name) && lower[name.len()..].starts_with([' ', '\t', '\n', '-', '/']) {
+	            return Some(name);
+	        }
+	        for sep in [";", "&&", "||", "|", "$(", "`", "\n"] {
+	            if let Some(rest) = lower.split_once(sep) {
+	                let tail = rest.1.trim_start();
+	                if tail.starts_with(name) && tail[name.len()..].starts_with([' ', '\t', '\n', '-', '/']) {
+	                    return Some(name);
+	                }
+	            }
+	        }
+	    }
+	    REDIR_MARKERS.iter().copied().find(|m| lower.contains(m))
+	}
 	/// Live gate: classify `command` via the configured backend, then decide().
-	/// Backends: "typesafe" (TypeSafe System One, default) or "openrouter"
-	/// (OpenAI-compatible chat completion, strict-JSON verdict).
-	/// Fail-closed: disabled=false bypasses ONLY when jev.enabled is false AND
-	/// allow_ungoverned_bash is explicit; otherwise missing key / unreachable /
-	/// timeout / malformed answer = REFUSE. Refusals log the command hash only.
+	/// Deterministic network-command deny runs first (no key needed): host
+	/// bash never touches the network; network work belongs in somp_task.
+	/// Then the backend classifier as before. Fail-closed throughout.
 	pub async fn gate(command: &str, cfg: &crate::config::JevCfg) -> Result<()> {
+	    if let Some(token) = deny_network_command(command) {
+	        bail!("JEV gate: network egress in host bash refused ({token}) — run it inside a disposable microVM via somp_task instead");
+	    }
 	    if !cfg.enabled {
 	        if cfg.allow_ungoverned_bash {
 	            eprintln!("warning: jev gate OFF (explicit allow_ungoverned_bash) — running WITHOUT classifier");
@@ -371,5 +418,30 @@ mod tests {
 	        let a = parse_openrouter_answer(&v).expect("parses with default");
 	        assert_eq!(a.action, Verdict::Block);
 	        assert!(decide_with_threshold(&a, P_DESTRUCTIVE_THRESHOLD).is_err());
+	    }
+	
+	    #[test]
+	    fn network_egress_denied_deterministically() {
+	        // The classifier question is destructive-only: curl is not
+	        // destructive, so without this lexical deny it would allow.
+	        for cmd in [
+	            "curl -sI https://example.com | head -3",
+	            "wget -q http://example.com/x -O /tmp/x",
+	            "ssh user@host true",
+	            "echo hi | nc example.com 80",
+	            "echo data > /dev/tcp/10.0.0.1/443",
+	            "CURL -s https://example.com",
+	            "true && curl -s https://example.com",
+	        ] {
+	            assert!(deny_network_command(cmd).is_some(), "must deny: {cmd}");
+	        }
+	    }
+	
+	    #[test]
+	    fn network_deny_has_no_false_positives_on_safe_words() {
+	        // "sync"/"echo curl" contain decoy substrings but run no network.
+	        for cmd in ["sync", "echo hello", "echo curl is a tool", "ls -la"] {
+	            assert!(deny_network_command(cmd).is_none(), "must allow: {cmd}");
+	        }
 	    }
 	}

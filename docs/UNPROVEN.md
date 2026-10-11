@@ -388,3 +388,21 @@
 	  verdict=refuse`, exit 1 (`p(destructive)=0.990 > 0.15`). First live
 	  model-verdict refuse (earlier refuses were fail-closed decode errors;
 	  fixed via raw-bytes + lossy decode + header diagnostics in `ff74229`).
+	
+	## JEV deterministic network-egress deny (2026-10-11, operator report)
+	- Operator: JEV allowed internet access from host bash. Root cause:
+	  the classifier asks only "destructive or irreversible" and `curl`
+	  is not destructive (p≈0 → allow). No NIC policy exists on host bash
+	  to enforce — the governed stance is host shells never touch the
+	  network; network work belongs in the `somp_task` guest.
+	- Fix: `deny_network_command()` in `jev_gate.rs` runs BEFORE any
+	  classifier call (lexical, no key needed): URL literals
+	  (http/https/ws/ftp/ssh), egress binaries at command/separator
+	  boundaries (curl/wget/ssh/scp/nc/socat/…), `/dev/tcp|udp/`
+	  redirections. Case-insensitive; `sync`/`echo curl` do NOT fire.
+	  A model verdict can never allow what is structurally refused.
+	- Live: `somp jev check "curl -sI https://example.com | head -3"` →
+	  `refuse: network egress in host bash refused (https)` exit 1, no key
+	  needed; benign `echo sync-check-word` still reaches the classifier
+	  (`OPENROUTER_API_KEY unset` fail-closed, correct). Tests 41/41,
+	  clippy 0.
