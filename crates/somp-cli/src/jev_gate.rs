@@ -387,7 +387,9 @@ pub const HOST_ALLOWLIST: &[&str] = &[
     "less",
     "more",
     "wc",
-    "tee",
+    // NOTE: `tee` deliberately absent — `ls | tee /tmp/out` writes arbitrary
+    // files with no `>` in argv, defeating the redirection refusal. Use the
+    // guest for staged output.
     "ls",
     "stat",
     "file",
@@ -470,8 +472,9 @@ pub const CARGO_DENIED_SUBCMDS: &[&str] = &[
 pub fn check_allowlist(command: &str) -> Result<()> {
     let lower = command.to_lowercase();
     // Redirections give a host shell a write primitive: refuse before
-    // naming any binary. `2>`/`&>` (stderr) are not a write primitive —
-    // only stdout redirections `>`/`>>` (incl `>|`, `>&`, `>>&`).
+    // naming any binary. ANY file target refuses (incl `2> file`) — bash
+    // redirections bypass the ext's path scoping entirely. Only `/dev/null`
+    // sinks and fd merges (`2>&1`, `&>`) are allowed.
     let bytes = lower.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -497,6 +500,12 @@ pub fn check_allowlist(command: &str) -> Result<()> {
                     k += 1;
                 }
                 let start = k;
+                // A leading `&` starts an fd-merge target (`&1`, `&2`): it is
+                // part of the target, not a delimiter. (`2>&1`: the scan
+                // starts after `>`, sees `&1`, must read it whole.)
+                if k < bytes.len() && bytes[k] == b'&' {
+                    k += 1;
+                }
                 while k < bytes.len()
                     && !matches!(bytes[k], b' ' | b'\t' | b';' | b'|' | b'&' | b'`' | b'$')
                 {
@@ -602,6 +611,31 @@ pub fn check_allowlist(command: &str) -> Result<()> {
                 if CARGO_DENIED_SUBCMDS.contains(&s) {
                     bail!("JEV gate: `cargo {s}` refused on host bash (exec/network/install) — run it inside the somp_task guest instead");
                 }
+            }
+        }
+        // In-place write flags turn read-only text tools into file writers
+        // with no `>` in argv (same hole `tee` had): `sed -i`, `sort -o f`,
+        // `yq -i`, gawk ` -i inplace`. Deny the flag; the read-only forms
+        // stay allowed. (`awk '{print > "f"}'` is caught by the `>` scan.)
+        const INPLACE_FLAGS: &[(&str, &[&str])] = &[
+            ("sed", &["-i", "--in-place"]),
+            ("sort", &["-o", "--output"]),
+            ("yq", &["-i", "--in-place"]),
+            ("awk", &["-i", "--include"]),
+        ];
+        if let Some((_, flags)) = INPLACE_FLAGS.iter().find(|(b, _)| *b == base) {
+            let denied = stripped.split_whitespace().skip(1).any(|t| {
+                flags.contains(&t)
+                    || t.starts_with("--in-place=")
+                    || t.starts_with("--output=")
+                    // Attached short forms (`sed -i''`, `sort -oout`): every
+                    // `-i*`/`-o*` token on these tools is the write flag —
+                    // none of them owns another flag under that letter.
+                    || ((base == "sed" || base == "yq" || base == "awk") && t.starts_with("-i"))
+                    || (base == "sort" && t.starts_with("-o"))
+            });
+            if denied {
+                bail!("JEV gate: `{base}` in-place write refused on host bash (silent file write) — run it inside the somp_task guest instead");
             }
         }
         if base == "git" {
@@ -1123,7 +1157,9 @@ mod tests {
 	            "VAR=1 echo scoped",
 	            "env -u OPENROUTER_API_KEY somp jev status",
             "ls /tmp 2> /dev/null",
-	            "echo a && ls && pwd",
+            "ls /tmp 2>&1 | head -5",
+            "sed -n '1,5p' file.txt",
+            "sort file.txt | uniq -c",
 	        ] {
 	            assert!(check_allowlist(cmd).is_ok(), "must allow: {cmd}");
 	        }
