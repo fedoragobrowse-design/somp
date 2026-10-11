@@ -163,11 +163,21 @@ async fn classify(base: &str, key: &str, model: &str, command: &str) -> Result<G
 	        .send()
 	        .await
 	        .map_err(|e| anyhow::anyhow!("JEV gate (openrouter): classifier unreachable ({e:#}) — refusing"))?;
-	    if !resp.status().is_success() {
-	        anyhow::bail!("JEV gate (openrouter): classifier HTTP {} — refusing", resp.status());
+	    let status = resp.status();
+	    if !status.is_success() {
+	        anyhow::bail!("JEV gate (openrouter): classifier HTTP {status} — refusing");
 	    }
-	    let v: serde_json::Value = resp.json().await
-	        .map_err(|e| anyhow::anyhow!("JEV gate (openrouter): malformed answer ({e:#}) — refusing"))?;
+	    // Decode envelope from raw text (not resp.json()): on malformed
+	    // bodies the raw snippet (first 200 chars, model-chosen text) is the
+	    // only diagnostic. Secret risk: the envelope echoes OUR prompt, not
+	    // the key (bearer travels in the header) — safe to sample.
+	    let raw = resp.text().await
+	        .map_err(|e| anyhow::anyhow!("JEV gate (openrouter): unreadable body ({e:#}) — refusing"))?;
+	    let v: serde_json::Value = serde_json::from_str(&raw)
+	        .map_err(|e| {
+	            let sample: String = raw.chars().take(200).collect();
+	            anyhow::anyhow!("JEV gate (openrouter): envelope not JSON ({e:#}) status={status} body={sample:?} — refusing")
+	        })?;
 	    parse_openrouter_answer(&v)
 	}
 	

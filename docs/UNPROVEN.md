@@ -28,11 +28,17 @@
   (shape mirrors omp `ai/src/judgment/typesafe.ts`), `decide_with_threshold`
   enforces `cfg.jev.threshold` (default 0.15). Fail-closed: disabled without
   explicit `--allow-ungoverned-bash`, missing/empty key, unreachable,
-  timeout (10s), non-2xx, malformed = REFUSE. Secret-deny independent.
-- Wired into `dispatch --command` + `session exec` (2026-10-10); default
-  `cat TASK.md` path needs no classification. Manage via `somp jev …`
-  + `/somp-jev …` in TUI. UNPROVEN: no live classifier 200 yet (no key
-  provisioned) — gate proven only by fail-closed refusal paths + unit tests.
+	timeout (10s typesafe / 15s openrouter), non-2xx, malformed = REFUSE. Secret-deny independent.
+	- Wired into `dispatch --command` + `session exec` (2026-10-10); default
+	  `cat TASK.md` path needs no classification. Manage via `somp jev …`
+	  + `/somp-jev …` in TUI. TypeSafe backend: UNPROVEN live (no key).
+	- OPENROUTER BACKEND LIVE 2026-10-11 (operator key): `somp jev check
+	  "echo hello-jevtrial"` → classifier 200, `p=0.000 confidence=1.00
+	  verdict=allow`, exit 0 (`backend=openrouter`, model
+	  `mistralai/mistral-large-4-0` after `openrouter/` prefix strip).
+	  Open refuse-path note: `rm -rf ~/Documents` refused via fail-closed
+	  envelope-decode error, not a model verdict — diagnostic now captures
+	  status + 200-char body sample; operator re-probe pending.
 
 ### Guest image (somp-guest) — build runbook
 - Builder: `AIec/scripts/build-firecracker-guest.sh` (AIec checkout), needs
