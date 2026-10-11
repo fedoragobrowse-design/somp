@@ -110,26 +110,30 @@ enum ModelOp {
     /// Apply a named preset: `muse-spark` → opencode.ai:443.
     Preset { name: String },
 }
-#[derive(Subcommand)]
-enum JevOp {
-    /// Show JEV status: enabled, model, threshold, key presence (name only).
-    Status,
-    /// Enable the gate (needs TYPESAFE_API_KEY at exec time, not now).
-    On,
-    /// Disable the gate — refuses unless --allow-ungoverned-bash is explicit.
-    Off {
-        #[arg(long)]
-        allow_ungoverned_bash: bool,
-    },
-    /// Pin the classifier model (default jev-latest).
-    Model { name: String },
-    /// Set the p(destructive) refuse threshold (default 0.15).
-    Threshold { value: f64 },
-    /// Classify one command and exit 0 (allow) / 1 (refuse). Machine-readable:
-    /// prints `allow` or `refuse: <reason>` on stdout. For the governed TUI
-    /// extension, which shells out per bash call (fail-closed on spawn error).
-    Check { command: Vec<String> },
-}
+	#[derive(Subcommand)]
+	enum JevOp {
+	    /// Show JEV status: enabled, model, threshold, key presence (name only).
+	    Status,
+	    /// Enable the gate (needs key in env at exec time, per backend).
+	    On,
+	    /// Disable the gate — refuses unless --allow-ungoverned-bash is explicit.
+	    Off {
+	        #[arg(long)]
+	        allow_ungoverned_bash: bool,
+	    },
+	    /// Pin the classifier model (typesafe default jev-latest; for
+	    /// backend=openrouter pin a real OpenRouter model id instead).
+	    Model { name: String },
+	    /// Switch classifier backend: typesafe (System One, default) or
+	    /// openrouter (chat completion, key OPENROUTER_API_KEY).
+	    Backend { name: String },
+	    /// Set the p(destructive) refuse threshold (default 0.15).
+	    Threshold { value: f64 },
+	    /// Classify one command and exit 0 (allow) / 1 (refuse). Machine-readable:
+	    /// prints `allow` or `refuse: <reason>` on stdout. For the governed TUI
+	    /// extension, which shells out per bash call (fail-closed on spawn error).
+	    Check { command: Vec<String> },
+	}
 #[derive(Subcommand)]
 enum PolicyOp {
     /// Submit a Guard widening proposal (agent proposes; human approves out-of-band
@@ -448,43 +452,59 @@ fn model_cmd(cfg: config::Config, op: ModelOp) -> Result<()> {
 /// JEV gate management. Key presence is name-only (never print bytes).
 fn jev_cmd(cfg: config::Config, op: JevOp) -> Result<()> {
     match op {
-        JevOp::Status => {
-            let key = match std::env::var("TYPESAFE_API_KEY") {
-                Ok(k) if !k.trim().is_empty() => "TYPESAFE_API_KEY: set (bytes hidden)",
-                _ => "TYPESAFE_API_KEY: MISSING — gate will refuse until exported",
-            };
-            println!("jev gate: {} (model {}, threshold {})", if cfg.jev.enabled { "ON" } else { "OFF" }, cfg.jev.model, cfg.jev.threshold);
-            println!("{key}");
-            println!("unguarded-bash escape hatch: {}", if cfg.jev.allow_ungoverned_bash { "ALLOWED (explicit)" } else { "denied (default)" });
-            Ok(())
-        }
-        JevOp::On => {
-            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(true))?;
-            println!("jev gate enabled (needs TYPESAFE_API_KEY in env at exec time)");
-            Ok(())
-        }
-        JevOp::Off { allow_ungoverned_bash } => {
-            if !allow_ungoverned_bash {
-                bail!("refusing: `somp jev off` without --allow-ungoverned-bash would silently unguard bash — pass the flag explicitly to own it");
-            }
-            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(false))?;
-            config_set(&["jev", "allow_ungoverned_bash"], serde_yaml::Value::Bool(true))?;
-            println!("jev gate disabled WITH explicit unguarded-bash audit flag");
-            Ok(())
-        }
-        JevOp::Model { name } => {
-            config_set(&["jev", "model"], serde_yaml::Value::String(name.clone()))?;
-            println!("jev model pinned to {name}");
-            Ok(())
-        }
-        JevOp::Threshold { value } => {
-            if !(0.0..=1.0).contains(&value) {
-                bail!("threshold must be 0.0..=1.0, got {value}");
-            }
-            config_set(&["jev", "threshold"], serde_yaml::Value::Number(serde_yaml::Number::from(value)))?;
-            println!("jev threshold set to {value}");
-            Ok(())
-        }
+	        JevOp::Status => {
+	            let key = match cfg.jev.backend.trim().to_lowercase().as_str() {
+	                "openrouter" => match std::env::var("OPENROUTER_API_KEY") {
+	                    Ok(k) if !k.trim().is_empty() => "OPENROUTER_API_KEY: set (bytes hidden)",
+	                    _ => "OPENROUTER_API_KEY: MISSING — gate will refuse until exported",
+	                },
+	                _ => match std::env::var("TYPESAFE_API_KEY") {
+	                    Ok(k) if !k.trim().is_empty() => "TYPESAFE_API_KEY: set (bytes hidden)",
+	                    _ => "TYPESAFE_API_KEY: MISSING — gate will refuse until exported",
+	                },
+	            };
+	            println!("jev gate: {} (backend {}, model {}, threshold {})", if cfg.jev.enabled { "ON" } else { "OFF" }, cfg.jev.backend, cfg.jev.model, cfg.jev.threshold);
+	            println!("{key}");
+	            println!("unguarded-bash escape hatch: {}", if cfg.jev.allow_ungoverned_bash { "ALLOWED (explicit)" } else { "denied (default)" });
+	            Ok(())
+	        }
+	        JevOp::On => {
+	            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(true))?;
+	            println!("jev gate enabled (needs key in env at exec time: TYPESAFE_API_KEY for typesafe, OPENROUTER_API_KEY for openrouter)");
+	            Ok(())
+	        }
+	        JevOp::Off { allow_ungoverned_bash } => {
+	            if !allow_ungoverned_bash {
+	                bail!("refusing: `somp jev off` without --allow-ungoverned-bash would silently unguard bash — pass the flag explicitly to own it");
+	            }
+	            config_set(&["jev", "enabled"], serde_yaml::Value::Bool(false))?;
+	            config_set(&["jev", "allow_ungoverned_bash"], serde_yaml::Value::Bool(true))?;
+	            println!("jev gate disabled WITH explicit unguarded-bash audit flag");
+	            Ok(())
+	        }
+	        JevOp::Model { name } => {
+	            config_set(&["jev", "model"], serde_yaml::Value::String(name.clone()))?;
+	            println!("jev model pinned to {name}");
+	            Ok(())
+	        }
+	        JevOp::Backend { name } => {
+	            let b = name.trim().to_lowercase();
+	            if b != "typesafe" && b != "openrouter" {
+	                bail!("unknown backend {name:?}: want typesafe|openrouter");
+	            }
+	            config_set(&["jev", "backend"], serde_yaml::Value::String(b.clone()))?;
+	            println!("jev backend set to {b} (key: {} at exec time)",
+	                if b == "openrouter" { "OPENROUTER_API_KEY" } else { "TYPESAFE_API_KEY" });
+	            Ok(())
+	        }
+	        JevOp::Threshold { value } => {
+	            if !(0.0..=1.0).contains(&value) {
+	                bail!("threshold must be 0.0..=1.0, got {value}");
+	            }
+	            config_set(&["jev", "threshold"], serde_yaml::Value::Number(serde_yaml::Number::from(value)))?;
+	            println!("jev threshold set to {value}");
+	            Ok(())
+	        }
         JevOp::Check { command } => {
             if command.is_empty() {
                 bail!("nothing to check");

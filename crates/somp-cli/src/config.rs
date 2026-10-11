@@ -79,24 +79,30 @@ pub struct GuardCfg {
     pub model_path: String,
 }
 
-/// JEV bash-gate config: classifier that must Allow a command before exec.
-/// Env TYPESAFE_API_KEY wins for the key (SDK convention, never baked in).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct JevCfg {
-    /// Classifier on/off. Default false (designed-not-wired → now wired,
-    /// but opt-in until TYPESAFE_API_KEY is provisioned).
-    #[serde(default)]
-    pub enabled: bool,
-    /// Model pinned so thresholds stay stable (docs: pin in production).
-    #[serde(default = "default_jev_model")]
-    pub model: String,
-    /// Confirm-if-p(destructive) threshold. Default 0.15 (Jev docs pin).
-    #[serde(default = "default_jev_threshold")]
-    pub threshold: f64,
-    /// Explicit operator escape hatch: allow ungoverned bash (audited).
-    #[serde(default)]
-    pub allow_ungoverned_bash: bool,
-}
+	/// JEV bash-gate config: classifier that must Allow a command before exec.
+	/// Env key wins for the secret (SDK convention, never baked in):
+	/// TYPESAFE_API_KEY for backend=typesafe, OPENROUTER_API_KEY for
+	/// backend=openrouter.
+	#[derive(Debug, Clone, Deserialize, Serialize)]
+	pub struct JevCfg {
+	    /// Classifier on/off. Default false (designed-not-wired → now wired,
+	    /// but opt-in until a key is provisioned).
+	    #[serde(default)]
+	    pub enabled: bool,
+	    /// Classifier backend: "typesafe" (System One, default) or "openrouter"
+	    /// (OpenAI-compatible chat completion with strict-JSON verdict).
+	    #[serde(default = "default_jev_backend")]
+	    pub backend: String,
+	    /// Model pinned so thresholds stay stable (docs: pin in production).
+	    #[serde(default = "default_jev_model")]
+	    pub model: String,
+	    /// Confirm-if-p(destructive) threshold. Default 0.15 (Jev docs pin).
+	    #[serde(default = "default_jev_threshold")]
+	    pub threshold: f64,
+	    /// Explicit operator escape hatch: allow ungoverned bash (audited).
+	    #[serde(default)]
+	    pub allow_ungoverned_bash: bool,
+	}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SrtCfg {
@@ -208,12 +214,15 @@ fn default_credential_header() -> String {
 fn default_model_path() -> String {
     "/v1/".into()
 }
-fn default_jev_model() -> String {
-    "jev-latest".into()
-}
-fn default_jev_threshold() -> f64 {
-    crate::jev_gate::P_DESTRUCTIVE_THRESHOLD
-}
+	fn default_jev_backend() -> String {
+	    "typesafe".into()
+	}
+	fn default_jev_model() -> String {
+	    "jev-latest".into()
+	}
+	fn default_jev_threshold() -> f64 {
+	    crate::jev_gate::P_DESTRUCTIVE_THRESHOLD
+	}
 fn default_srt_settings() -> PathBuf {
     PathBuf::from("guest/srt-settings.json")
 }
@@ -249,16 +258,17 @@ impl Default for GuardCfg {
         }
     }
 }
-impl Default for JevCfg {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            model: default_jev_model(),
-            threshold: default_jev_threshold(),
-            allow_ungoverned_bash: false,
-        }
-    }
-}
+	impl Default for JevCfg {
+	    fn default() -> Self {
+	        Self {
+	            enabled: false,
+	            backend: default_jev_backend(),
+	            model: default_jev_model(),
+	            threshold: default_jev_threshold(),
+	            allow_ungoverned_bash: false,
+	        }
+	    }
+	}
 impl Default for SrtCfg {
     fn default() -> Self {
         Self {
