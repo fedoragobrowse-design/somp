@@ -242,6 +242,24 @@ if (governed) {
 		}
 		return null;
 	}
+	// Backend-aware key hint for refusal messages: read once at load from
+	// `somp jev status` (cheap, cached). Falls back to naming both keys.
+	const JEV_KEY_HINT: string = (() => {
+		try {
+			const r = spawnSync(SOMP_PATH, ["jev", "status"], {
+				encoding: "utf-8",
+				timeout: 10_000,
+				env: process.env,
+			});
+			const out = (r.stdout ?? "") as string;
+			const m = /backend (\w+)/.exec(out);
+			if (m?.[1] === "openrouter") return "OPENROUTER_API_KEY + `somp jev on` (backend openrouter)";
+			if (m?.[1] === "typesafe") return "TYPESAFE_API_KEY + `somp jev on` (backend typesafe)";
+		} catch {
+			// fall through to the generic hint
+		}
+		return "TYPESAFE_API_KEY (backend typesafe) or OPENROUTER_API_KEY (backend openrouter) + `somp jev on`";
+	})();
 	// Shell out to `somp jev check <command>`: exit 0 = allow, else refuse.
 	// Spawn error / timeout / non-zero = REFUSE (fail-closed, never allow).
 	function jevCheck(command: string): { allow: boolean; reason: string } {
@@ -327,8 +345,8 @@ if (governed) {
 						block: true,
 						reason:
 							`sOMP governed mode: host bash refused by JEV gate (${v.reason}). ` +
-							"Run it inside a disposable microVM via somp_task instead. " +
-							"If the command is genuinely safe, the operator can run it themselves or provision TYPESAFE_API_KEY + `somp jev on`.",
+						"Run it inside a disposable microVM via somp_task instead. " +
+						`If the command is genuinely safe, the operator can run it themselves or provision ${JEV_KEY_HINT}.`,
 					};
 				}
 				return undefined;
