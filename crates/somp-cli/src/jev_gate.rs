@@ -164,19 +164,32 @@ async fn classify(base: &str, key: &str, model: &str, command: &str) -> Result<G
 	        .await
 	        .map_err(|e| anyhow::anyhow!("JEV gate (openrouter): classifier unreachable ({e:#}) — refusing"))?;
 	    let status = resp.status();
+	    // Response headers BEFORE consuming the body: content-type/length/
+	    // encoding decide whether a decode failure is gzip-misread, SSE
+	    // stream, or provider error page. Header VALUES are provider-chosen
+	    // (no key bytes: bearer travels in the REQUEST header, and command
+	    // bytes never leave our prompt) — safe to log.
+	    let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE)
+	        .and_then(|v| v.to_str().ok()).unwrap_or("<absent>").to_owned();
+	    let clen = resp.headers().get(reqwest::header::CONTENT_LENGTH)
+	        .and_then(|v| v.to_str().ok()).unwrap_or("<absent>").to_owned();
+	    let cenc = resp.headers().get(reqwest::header::CONTENT_ENCODING)
+	        .and_then(|v| v.to_str().ok()).unwrap_or("<absent>").to_owned();
 	    if !status.is_success() {
-	        anyhow::bail!("JEV gate (openrouter): classifier HTTP {status} — refusing");
+	        anyhow::bail!("JEV gate (openrouter): classifier HTTP {status} ctype={ctype} clen={clen} cenc={cenc} — refusing");
 	    }
-	    // Decode envelope from raw text (not resp.json()): on malformed
-	    // bodies the raw snippet (first 200 chars, model-chosen text) is the
-	    // only diagnostic. Secret risk: the envelope echoes OUR prompt, not
-	    // the key (bearer travels in the header) — safe to sample.
-	    let raw = resp.text().await
-	        .map_err(|e| anyhow::anyhow!("JEV gate (openrouter): unreadable body ({e:#}) — refusing"))?;
+	    // Decode envelope from raw BYTES (not resp.text()/resp.json()): the
+	    // rm -rf probe returned 2xx with a body that fails UTF-8 decode, so
+	    // str-decoding is exactly what breaks. bytes→lossy→parse keeps the
+	    // fail-closed contract (parse still strict) while the diagnostic
+	    // samples the first 200 chars of whatever arrived.
+	    let bytes = resp.bytes().await
+	        .map_err(|e| anyhow::anyhow!("JEV gate (openrouter): unreadable body ({e:#}) status={status} ctype={ctype} clen={clen} cenc={cenc} — refusing"))?;
+	    let raw = String::from_utf8_lossy(&bytes);
 	    let v: serde_json::Value = serde_json::from_str(&raw)
 	        .map_err(|e| {
 	            let sample: String = raw.chars().take(200).collect();
-	            anyhow::anyhow!("JEV gate (openrouter): envelope not JSON ({e:#}) status={status} body={sample:?} — refusing")
+	            anyhow::anyhow!("JEV gate (openrouter): envelope not JSON ({e:#}) status={status} ctype={ctype} clen={clen} cenc={cenc} nbytes={} body={sample:?} — refusing", bytes.len())
 	        })?;
 	    parse_openrouter_answer(&v)
 	}
